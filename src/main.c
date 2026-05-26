@@ -27,10 +27,7 @@ static bool load_rom(const char *path)
 {
    SDFile *f = pd->file->open(path, kFileRead | kFileReadData);
    if (!f)
-   {
-      pd->system->logToConsole("[VB] Cannot open %s", path);
       return false;
-   }
 
    pd->file->seek(f, 0, SEEK_END);
    int size = pd->file->tell(f);
@@ -38,7 +35,6 @@ static bool load_rom(const char *path)
 
    if (size <= 0)
    {
-      pd->system->logToConsole("[VB] ROM file is empty");
       pd->file->close(f);
       return false;
    }
@@ -54,17 +50,50 @@ static bool load_rom(const char *path)
    pd->file->read(f, data, size);
    pd->file->close(f);
 
-   pd->system->logToConsole("[VB] Loaded ROM: %d bytes", size);
-
    bool ok = vb_load_rom_data(data, (uint32_t)size);
    free(data);
 
-   if (!ok)
-      pd->system->logToConsole("[VB] vb_load_rom_data() failed");
-   else
-      pd->system->logToConsole("[VB] ROM initialised OK");
-
+   if (ok)
+      pd->system->logToConsole("[VB] Loaded: %s (%d bytes)", path, size);
    return ok;
+}
+
+/* Scan the data directory for the first *.vb file and load it. */
+static char found_rom_buf[64];
+static bool found_rom = false;
+
+static void find_vb_file(const char *path, void *userdata)
+{
+   (void)userdata;
+   if (found_rom) return;
+   int len = 0;
+   while (path[len]) len++;
+   if (len > 3 && path[len-3] == '.' &&
+       (path[len-2] == 'v' || path[len-2] == 'V') &&
+       (path[len-1] == 'b' || path[len-1] == 'B'))
+   {
+      /* Copy into stable buffer — listfiles may reuse the path pointer */
+      int i = 0;
+      while (path[i] && i < (int)sizeof(found_rom_buf) - 1)
+      {
+         found_rom_buf[i] = path[i];
+         i++;
+      }
+      found_rom_buf[i] = '\0';
+      found_rom = true;
+   }
+}
+
+static bool find_and_load_rom(void)
+{
+   found_rom = false;
+   pd->file->listfiles(".", find_vb_file, NULL, 0);
+   if (!found_rom)
+   {
+      pd->system->logToConsole("[VB] No .vb ROM found in data folder");
+      return false;
+   }
+   return load_rom(found_rom_buf);
 }
 
 /* ── Update callback (called ~50 fps by Playdate runtime) ────────────────── */
@@ -72,6 +101,7 @@ static bool load_rom(const char *path)
 static int update(void *userdata)
 {
    (void)userdata;
+   static int frame_count = 0;
 
    if (!rom_loaded)
    {
@@ -86,13 +116,25 @@ static int update(void *userdata)
    float crank_change = pd->system->getCrankChange();
 
    vb_update_input((uint32_t)current, crank_change);
-   vb_run_frame();
 
-   uint8_t *fb = pd->graphics->getFrame();
-   vb_render_frame(fb);
-   pd->graphics->markUpdatedRows(0, LCD_ROWS - 1);
+   uint32_t t0 = pd->system->getCurrentTimeMilliseconds();
+   vb_run_frame();
+   uint32_t t1 = pd->system->getCurrentTimeMilliseconds();
+
+   uint32_t t2 = t1;
+   if (vb_frame_rendered)
+   {
+      uint8_t *fb = pd->graphics->getFrame();
+      vb_render_frame(fb);
+      t2 = pd->system->getCurrentTimeMilliseconds();
+      pd->graphics->markUpdatedRows(0, LCD_ROWS - 1);
+   }
 
    vb_audio_push();
+
+   if (frame_count % 300 == 0)
+      pd->system->logToConsole("[VB] frame %d: emu=%ums disp=%ums", frame_count, t1-t0, t2-t1);
+   frame_count++;
 
    pd->system->drawFPS(0, 0);
 
@@ -117,9 +159,9 @@ int eventHandler(PlaydateAPI *playdate, PDSystemEvent event, uint32_t arg)
          vb_audio_init(pd);
          vb_set_log(pd->system->logToConsole);
 
-         rom_loaded = load_rom("rom.vb");
+         rom_loaded = find_and_load_rom();
          if (!rom_loaded)
-            pd->system->logToConsole("[VB] Failed to load rom.vb");
+            pd->system->logToConsole("[VB] Failed to load any .vb ROM");
 
          pd->system->setUpdateCallback(update, NULL);
          break;

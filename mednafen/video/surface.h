@@ -33,6 +33,9 @@
 #define GREEN_SHIFT 5
 #define BLUE_SHIFT 0
 #define MAKECOLOR(r, g, b, a) (((r >> RED_EXPAND) << RED_SHIFT) | ((g >> GREEN_EXPAND) << GREEN_SHIFT) | ((b >> BLUE_EXPAND) << BLUE_SHIFT))
+#elif defined(WANT_8BPP)
+/* 8-bit grayscale — store green channel as luminance */
+#define MAKECOLOR(r, g, b, a) ((uint32)(uint8)(g))
 #endif
 
 typedef struct

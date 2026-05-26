@@ -43,6 +43,9 @@ typedef struct
 
 	// Number of frames currently in internal sound buffer.  Set by the system emulation code, to be read by the driver code.
 	int32 SoundBufSize;
+
+	// Set by driver to skip VIP rendering this frame (frame-skip optimization).
+	bool skip;
 } EmulateSpecStruct;
 
 #ifdef __cplusplus

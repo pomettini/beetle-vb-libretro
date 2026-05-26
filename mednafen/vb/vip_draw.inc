@@ -372,6 +372,12 @@ void VIP_DrawBlock(uint8 block_no, uint8 *fb_l, uint8 *fb_r)
   uint32 bgm = (world_ptr[0] >> 12) & 3;
   bool lron[2] =  { (bool)(world_ptr[0] & 0x8000), (bool)(world_ptr[0] & 0x4000) };
 
+  /* Skip right-eye drawing when the right-eye anaglyph color is black —
+     CopyFBColumnToTarget already discards the right-eye surface pass,
+     so drawing into fb_r would be wasted work. */
+  if(!Anaglyph_Colors[1])
+   lron[1] = false;
+
   uint16 gx = sign_11_to_s16(world_ptr[1]);
   uint16 gp = ParallaxDisabled ? 0 : sign_9_to_s16(world_ptr[2]);
   uint16 gy = sign_11_to_s16(world_ptr[3]);

@@ -38,7 +38,7 @@ OPT   = -O2 -falign-functions=16 -fomit-frame-pointer
 
 # ── Preprocessor defines ────────────────────────────────────────────────────
 DEFINES  = -DTARGET_PLAYDATE=1 -DTARGET_EXTENSION=1
-DEFINES += -DWANT_32BPP=1
+DEFINES += -DWANT_8BPP=1
 DEFINES += -DNDEBUG
 DEFINES += -DMEDNAFEN_VERSION=\"0.9.31\" -DMEDNAFEN_VERSION_NUMERIC=931
 DEFINES += -D__HEAP_SIZE=$(HEAP_SIZE) -D__STACK_SIZE=$(STACK_SIZE)
@@ -152,6 +152,12 @@ $(OBJDIR)/sim/%.o: %.cpp | $(OBJDIR)
 	$(SIM_CXX) -c $(SIM_CXXFLAGS) $< -o $@
 
 # ── Compile rules ─────────────────────────────────────────────────────────────
+
+# v810 interpreter: compile with -Os so it fits in the 32KB Cortex-M7 I-cache
+$(OBJDIR)/mednafen/hw_cpu/v810/v810_cpu.o: mednafen/hw_cpu/v810/v810_cpu.cpp | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CXX) -c $(filter-out -O2,$(CXXFLAGS)) -Os $< -o $@
+
 $(OBJDIR)/%.o: %.c | $(OBJDIR)
 	@mkdir -p $(dir $@)
 	$(CC) -c $(CFLAGS) $< -o $@

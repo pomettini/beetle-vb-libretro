@@ -72,13 +72,20 @@ static Blip_Buffer sbuf[2];
 
 /* ── Public state (accessed from main.c, vb_display.c, vb_audio.c) ────────── */
 
-uint32_t vb_framebuffer[VB_SCREEN_WIDTH * VB_SCREEN_HEIGHT];
+uint8_t  vb_framebuffer[VB_SCREEN_WIDTH * VB_SCREEN_HEIGHT];
 int16_t  vb_sound_buf[0x10000];
 int      vb_sound_samples = 0;
 uint16_t vb_input_buf     = 0;
 
 static uint8_t vb_low_battery = 0;
 static uint32_t vb_frame_count = 0;
+static uint32_t dbg_vip_calls = 0;
+
+bool vb_frame_rendered = false;
+
+/* Render 1 in every VB_RENDER_EVERY_N frames; skip the rest for speed */
+#define VB_RENDER_EVERY_N 8
+static int vb_render_skip_counter = 0;
 
 static struct MDFN_Surface surf;
 
@@ -262,14 +269,10 @@ extern "C" void VB_SetEvent(const int type, const v810_timestamp_t next_timestam
 
 static int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
 {
-   static int eh_count = 0;
-   if (eh_count < 3) {
-      VB_LOG("[VB] EventHandler #%d ts=%d vip=%d timer=%d input=%d",
-             eh_count, (int)timestamp, next_vip_ts, next_timer_ts, next_input_ts);
-      eh_count++;
+   if (timestamp >= next_vip_ts) {
+      next_vip_ts = VIP_Update(timestamp);
+      dbg_vip_calls++;
    }
-
-   if (timestamp >= next_vip_ts)   next_vip_ts   = VIP_Update(timestamp);
    if (timestamp >= next_timer_ts) next_timer_ts = TIMER_Update(timestamp);
    if (timestamp >= next_input_ts) next_input_ts = VBINPUT_Update(timestamp);
 
@@ -342,11 +345,11 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    setting_vb_rcolor        = 0x000000;
    setting_vb_default_color = 0xFFFFFF;
    setting_vb_3dmode        = VB3DMODE_ANAGLYPH;
-   setting_vb_cpu_emulation = 1;
+   setting_vb_cpu_emulation = 0; /* V810_EMU_MODE_FAST */
 
    VB_LOG("[VB] new V810");
    VB_V810 = new V810();
-   VB_LOG("[VB] V810::Init ACCURATE");
+   VB_LOG("[VB] V810::Init FAST");
    VB_V810->Init((V810_Emu_Mode)setting_vb_cpu_emulation, true);
    VB_LOG("[VB] V810::Init done");
 
@@ -407,20 +410,20 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    VIP_SetDefaultColor(0xFFFFFF);
    VIP_SetParallaxDisable(false);
    VIP_SetInstantDisplayHack(true);
-   VIP_SetAllowDrawSkip(false);
+   VIP_SetAllowDrawSkip(true);
    VBINPUT_SetInstantReadHack(true);
 
-   surf.pixels      = vb_framebuffer;
+   surf.pixels8     = vb_framebuffer;
    surf.w           = VB_SCREEN_WIDTH;
    surf.h           = VB_SCREEN_HEIGHT;
    surf.pitchinpix  = VB_SCREEN_WIDTH;
    surf.pitch32     = VB_SCREEN_WIDTH;
-   surf.format.bpp        = 32;
+   surf.format.bpp        = 8;
    surf.format.colorspace = MDFN_COLORSPACE_RGB;
-   surf.format.Rshift     = 16;
-   surf.format.Gshift     = 8;
+   surf.format.Rshift     = 0;
+   surf.format.Gshift     = 0;
    surf.format.Bshift     = 0;
-   surf.format.Ashift     = 24;
+   surf.format.Ashift     = 0;
 
    VBINPUT_SetInput(0, "gamepad", &vb_input_buf);
    VBINPUT_SetInput(1, "gamepad", &vb_low_battery);
@@ -451,14 +454,19 @@ void vb_run_frame(void)
    v810_timestamp_t v810_timestamp;
    EmulateSpecStruct spec;
 
-   VB_LOG("[VB] run_frame #%u next_event_ts=%d", (unsigned)vb_frame_count,
-          (int)VB_V810->GetEventNT());
+   if (vb_frame_count == 0)
+      VB_LOG("[VB] run_frame #0 next_event_ts=%d", (int)VB_V810->GetEventNT());
 
    MDFNMP_ApplyPeriodicCheats();
    VBINPUT_Frame();
 
+   bool do_render = (vb_render_skip_counter == 0);
+   vb_render_skip_counter = (vb_render_skip_counter + 1) % VB_RENDER_EVERY_N;
+   vb_frame_rendered = do_render;
+
    spec.surface            = &surf;
    spec.VideoFormatChanged = (vb_frame_count == 0);
+   spec.skip               = !do_render;
    spec.DisplayRect.x      = 0;
    spec.DisplayRect.y      = 0;
    spec.DisplayRect.w      = 0;
@@ -466,13 +474,14 @@ void vb_run_frame(void)
    spec.SoundBufMaxSize    = (int32)(sizeof(vb_sound_buf) / sizeof(int16_t)) / 2;
    spec.SoundBufSize       = 0;
 
-   VB_LOG("[VB] VIP_StartFrame");
+   dbg_vip_calls = 0;
    VIP_StartFrame(&spec);
-   VB_LOG("[VB] V810::Run next_vip=%d next_timer=%d next_input=%d",
-          next_vip_ts, next_timer_ts, next_input_ts);
 
    v810_timestamp = VB_V810->Run(EventHandler);
-   VB_LOG("[VB] V810::Run done ts=%d", (int)v810_timestamp);
+
+   if (vb_frame_count % 300 == 0)
+      VB_LOG("[VB] frame %u vip_calls=%u ts=%d",
+             (unsigned)vb_frame_count, (unsigned)dbg_vip_calls, (int)v810_timestamp);
 
    FixNonEvents();
    ForceEventUpdates(v810_timestamp);

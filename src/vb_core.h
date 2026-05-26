@@ -11,8 +11,11 @@
 extern "C" {
 #endif
 
-/* 32-bpp ARGB framebuffer filled by vb_run_frame() */
-extern uint32_t vb_framebuffer[VB_SCREEN_WIDTH * VB_SCREEN_HEIGHT];
+/* 8-bit grayscale framebuffer filled by vb_run_frame() */
+extern uint8_t vb_framebuffer[VB_SCREEN_WIDTH * VB_SCREEN_HEIGHT];
+
+/* Set to true when the last vb_run_frame() actually rendered; false on skip frames */
+extern bool vb_frame_rendered;
 
 /*
  * Interleaved stereo audio produced by vb_run_frame().

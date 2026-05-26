@@ -824,7 +824,7 @@ void VIP_StartFrame(EmulateSpecStruct *espec)
    }
 
    surface = espec->surface;
-   skip    = false;
+   skip    = espec->skip;
    
    if(VidSettingsDirty)
    {
@@ -832,6 +832,8 @@ void VIP_StartFrame(EmulateSpecStruct *espec)
 	  memset(surface->pixels, 0, surface->pitch32 * surface->h * 4);
 #elif defined(WANT_16BPP)
 	  memset(surface->pixels16, 0, surface->pitch32 * surface->h * 2);
+#elif defined(WANT_8BPP)
+	  memset(surface->pixels8, 0, surface->pitch32 * surface->h);
 #endif
 
       VidSettingsDirty = false;
@@ -931,6 +933,11 @@ static INLINE void CopyFBColumnToTarget_Anaglyph_BASE(const bool DisplayActive_a
 static void CopyFBColumnToTarget_Anaglyph(void)
 {
    const int lr = (DisplayRegion & 2) >> 1;
+
+   /* Skip right-eye pass when all its shades are zero (e.g. right eye = black).
+      The OR-blend with zero is a no-op that would still do expensive RMW cycles. */
+   if(lr && !BrightCLUT[1][1] && !BrightCLUT[1][2] && !BrightCLUT[1][3])
+      return;
 
    if(!lr)
       CopyFBColumnToTarget_Anaglyph_BASE(DisplayActive, 0);
