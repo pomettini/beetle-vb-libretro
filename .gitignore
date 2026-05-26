@@ -4,3 +4,9 @@
 *.dylib
 /old
 *.a
+
+# Claude
+.claude/
+
+# Codex
+.codex/
