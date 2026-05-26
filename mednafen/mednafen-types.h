@@ -3,6 +3,11 @@
 
 #include <stdint.h>
 
+/* Ensure INLINE is defined regardless of which translation unit includes this */
+#ifndef INLINE
+#include <retro_inline.h>
+#endif
+
 typedef int8_t int8;
 typedef int16_t int16;
 typedef int32_t int32; 

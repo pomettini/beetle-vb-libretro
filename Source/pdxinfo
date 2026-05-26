@@ -1,0 +1,6 @@
+name=Virtual Boy
+author=mednafen / Playdate port
+description=Virtual Boy emulator
+bundleID=com.playdate.virtualboy
+version=0.1
+buildNumber=1

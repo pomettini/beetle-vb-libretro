@@ -8,6 +8,10 @@
 #include <limits.h>
 #include <stdint.h>
 
+#ifndef INLINE
+#include <retro_inline.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
