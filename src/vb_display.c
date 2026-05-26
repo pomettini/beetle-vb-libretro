@@ -1,9 +1,8 @@
 /*
- * vb_display.c — Convert the VB 32-bpp ARGB framebuffer to the Playdate 1-bit LCD.
+ * vb_display.c — Convert the VB 8-bpp grayscale framebuffer to the Playdate 1-bit LCD.
  *
- * The VIP produces a 384×224 ARGB32 image. We extract the green channel as
- * luminance and apply 4×4 Bayer ordered dithering to simulate four shades on
- * the 1-bit display.
+ * The VIP produces a 384×224 8bpp grayscale image (WANT_8BPP). We apply 4×4
+ * Bayer ordered dithering to simulate four shades on the 1-bit display.
  *
  * The 384×224 image is centred in the 400×240 display: X_OFFSET=8, Y_OFFSET=8.
  *
@@ -11,7 +10,7 @@
  *
  * Because X_OFFSET=8 (one byte), VB pixels 0..383 land exactly on bytes 1..48
  * of each Playdate row. We process 8 VB pixels → 1 output byte per inner
- * iteration, eliminating per-pixel bit manipulation and the multiply-by-17.
+ * iteration, eliminating per-pixel bit manipulation.
  */
 
 #include <string.h>
@@ -43,7 +42,6 @@ void vb_render_frame(uint8_t *pd_fb)
 
       for (int vx = 0; vx < VB_SCREEN_WIDTH; vx += 8, src += 8, dst++)
       {
-         /* 8-bit luma; pixel is white (1) if luma >= threshold */
          uint8_t b = 0;
          if (src[0] >= t[0]) b  = 0x80;
          if (src[1] >= t[1]) b |= 0x40;

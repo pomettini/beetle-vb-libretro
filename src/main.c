@@ -156,6 +156,14 @@ int eventHandler(PlaydateAPI *playdate, PDSystemEvent event, uint32_t arg)
          pd = playdate;
          pd->display->setRefreshRate(50);
 
+         {
+            uint32_t t0 = pd->system->getCurrentTimeMilliseconds();
+            volatile uint32_t x = 0;
+            for (uint32_t i = 0; i < 1000000; i++) x += i;
+            uint32_t t1 = pd->system->getCurrentTimeMilliseconds();
+            pd->system->logToConsole("[VB] CPU bench: 1M iters=%dms (168MHz~12ms 48MHz~42ms)", (int)(t1-t0));
+         }
+
          vb_audio_init(pd);
          vb_set_log(pd->system->logToConsole);
 
