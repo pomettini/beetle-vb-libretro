@@ -164,6 +164,9 @@ class V810
 
  void SetInt(int level);
 
+ /* Inject or clear a synthetic HALT to skip busy-wait polling loops. */
+ INLINE void SetIdleHalt(bool idle) { Halted = idle ? 1 : 0; }
+
  void SetMemWriteBus32(uint8 A, bool value);
  void SetMemReadBus32(uint8 A, bool value);
 

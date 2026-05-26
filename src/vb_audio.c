@@ -46,6 +46,8 @@ static int audio_callback(void *context, int16_t *left, int16_t *right, int len)
    return 1; /* keep source alive */
 }
 
+#ifndef VB_DISABLE_AUDIO
+
 void vb_audio_init(PlaydateAPI *playdate)
 {
    memset(ring_l, 0, sizeof(ring_l));
@@ -68,3 +70,10 @@ void vb_audio_push(void)
       ring_write = (ring_write + 1) & RING_MASK;
    }
 }
+
+#else
+
+void vb_audio_init(PlaydateAPI *playdate) { (void)playdate; }
+void vb_audio_push(void) {}
+
+#endif

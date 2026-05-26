@@ -88,6 +88,9 @@ bool vb_frame_rendered = false;
 static int vb_render_skip_counter = 0;
 
 /* ── Memory access profiling ────────────────────────────────────────────────── */
+static uint32_t vip_reads_window = 0; /* VIP reads since last EventHandler call */
+static bool     vb_idle_mode    = false;
+
 static uint32_t dbg_rd_vip   = 0;  /* space 0: VIP registers/DRAM */
 static uint32_t dbg_rd_wram  = 0;  /* space 5: WRAM */
 static uint32_t dbg_rd_gprom = 0;  /* space 7: cart ROM */
@@ -191,7 +194,7 @@ uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: dbg_rd_vip++;   return VIP_Read16(timestamp, A);
+      case 0: dbg_rd_vip++; vip_reads_window++; return VIP_Read16(timestamp, A);
       case 2: dbg_rd_other++; return HWCTRL_Read(timestamp, A);
       case 1: case 3: case 4: dbg_rd_other++; break;
       case 5: dbg_rd_wram++;  return LoadU16_LE((uint16 *)&WRAM[A & 0xFFFF]);
@@ -287,6 +290,18 @@ static int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
 
    if (timestamp >= VB_FRAME_BUDGET)
       VB_ExitLoop();
+
+   /* Idle skip: if the game is busy-waiting on VIP (≥10 VIP reads per 259-cycle
+      window) and no IRQ is pending, inject HALT so the inner instruction loop is
+      skipped entirely — timestamp_rl jumps straight to next_event_ts each outer
+      iteration instead of executing hundreds of no-op polling instructions. */
+   uint32_t reads = vip_reads_window;
+   vip_reads_window = 0;
+   if (IRQ_Asserted != 0)
+      vb_idle_mode = false;
+   else if (reads >= 10)
+      vb_idle_mode = true;
+   VB_V810->SetIdleHalt(vb_idle_mode);
 
    return CalcNextTS();
 }
@@ -482,6 +497,10 @@ void vb_run_frame(void)
    spec.DisplayRect.h      = 0;
    spec.SoundBufMaxSize    = (int32)(sizeof(vb_sound_buf) / sizeof(int16_t)) / 2;
    spec.SoundBufSize       = 0;
+
+   vip_reads_window = 0;
+   vb_idle_mode = false;
+   VB_V810->SetIdleHalt(false);
 
    dbg_vip_calls = 0;
    dbg_rd_vip = dbg_rd_wram = dbg_rd_gprom = dbg_rd_other = 0;
