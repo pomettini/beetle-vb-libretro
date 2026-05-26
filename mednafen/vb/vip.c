@@ -1318,6 +1318,7 @@ v810_timestamp_t MDFN_FASTCALL VIP_Update(const v810_timestamp_t timestamp)
                for(lr = 0; lr < 2; lr++)
                {
                   int x;
+                  if(lr && !Anaglyph_Colors[1]) continue;
                   uint8 *FB_Target = FB[DrawingFB][lr] + DrawingBlock * 2;
 
                   for(x = 0; x < 384; x++)
@@ -1327,9 +1328,9 @@ v810_timestamp_t MDFN_FASTCALL VIP_Update(const v810_timestamp_t timestamp)
                         | (DrawingBuffers[lr][8 + x + 512 * 2] << 4)
                         | (DrawingBuffers[lr][8 + x + 512 * 3] << 6);
 
-                     FB_Target[64 * x + 1] = (DrawingBuffers[lr][8 + x + 512 * 4] << 0) 
+                     FB_Target[64 * x + 1] = (DrawingBuffers[lr][8 + x + 512 * 4] << 0)
                         | (DrawingBuffers[lr][8 + x + 512 * 5] << 2)
-                        | (DrawingBuffers[lr][8 + x + 512 * 6] << 4) 
+                        | (DrawingBuffers[lr][8 + x + 512 * 6] << 4)
                         | (DrawingBuffers[lr][8 + x + 512 * 7] << 6);
 
                   }

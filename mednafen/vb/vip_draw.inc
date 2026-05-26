@@ -355,7 +355,8 @@ void VIP_DrawBlock(uint8 block_no, uint8 *fb_l, uint8 *fb_r)
  for( y = 0; y < 8; y++)
  {
   memset(fb_l + y * 512, BKCOL, 384);
-  memset(fb_r + y * 512, BKCOL, 384);
+  if(Anaglyph_Colors[1])
+   memset(fb_r + y * 512, BKCOL, 384);
  }
 
  obj_search_which = 3;
