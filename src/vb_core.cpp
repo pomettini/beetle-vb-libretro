@@ -87,6 +87,15 @@ bool vb_frame_rendered = false;
 #define VB_RENDER_EVERY_N 8
 static int vb_render_skip_counter = 0;
 
+/* ── Memory access profiling ────────────────────────────────────────────────── */
+static uint32_t dbg_rd_vip   = 0;  /* space 0: VIP registers/DRAM */
+static uint32_t dbg_rd_wram  = 0;  /* space 5: WRAM */
+static uint32_t dbg_rd_gprom = 0;  /* space 7: cart ROM */
+static uint32_t dbg_rd_other = 0;  /* VSU, HWCTRL, GPRAM */
+static uint32_t dbg_wr_vip   = 0;
+static uint32_t dbg_wr_wram  = 0;
+static uint32_t dbg_wr_other = 0;
+
 static struct MDFN_Surface surf;
 
 /* ── IRQ helpers ────────────────────────────────────────────────────────────── */
@@ -167,12 +176,12 @@ uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: return VIP_Read8(timestamp, A);
-      case 2: return HWCTRL_Read(timestamp, A);
-      case 1: case 3: case 4: break;
-      case 5: return WRAM[A & 0xFFFF];
-      case 6: if (GPRAM) return GPRAM[A & GPRAM_Mask]; break;
-      case 7: return GPROM[A & GPROM_Mask];
+      case 0: dbg_rd_vip++;   return VIP_Read8(timestamp, A);
+      case 2: dbg_rd_other++; return HWCTRL_Read(timestamp, A);
+      case 1: case 3: case 4: dbg_rd_other++; break;
+      case 5: dbg_rd_wram++;  return WRAM[A & 0xFFFF];
+      case 6: dbg_rd_other++; if (GPRAM) return GPRAM[A & GPRAM_Mask]; break;
+      case 7: dbg_rd_gprom++; return GPROM[A & GPROM_Mask];
    }
    return 0;
 }
@@ -182,12 +191,12 @@ uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: return VIP_Read16(timestamp, A);
-      case 2: return HWCTRL_Read(timestamp, A);
-      case 1: case 3: case 4: break;
-      case 5: return LoadU16_LE((uint16 *)&WRAM[A & 0xFFFF]);
-      case 6: if (GPRAM) return LoadU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask]); break;
-      case 7: return LoadU16_LE((uint16 *)&GPROM[A & GPROM_Mask]);
+      case 0: dbg_rd_vip++;   return VIP_Read16(timestamp, A);
+      case 2: dbg_rd_other++; return HWCTRL_Read(timestamp, A);
+      case 1: case 3: case 4: dbg_rd_other++; break;
+      case 5: dbg_rd_wram++;  return LoadU16_LE((uint16 *)&WRAM[A & 0xFFFF]);
+      case 6: dbg_rd_other++; if (GPRAM) return LoadU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask]); break;
+      case 7: dbg_rd_gprom++; return LoadU16_LE((uint16 *)&GPROM[A & GPROM_Mask]);
    }
    return 0;
 }
@@ -197,12 +206,12 @@ void MDFN_FASTCALL MemWrite8(v810_timestamp_t &timestamp, uint32 A, uint8 V)
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: VIP_Write8(timestamp, A, V);  break;
-      case 1: VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
-      case 2: HWCTRL_Write(timestamp, A, V); break;
-      case 5: WRAM[A & 0xFFFF] = V; break;
-      case 6: if (GPRAM) GPRAM[A & GPRAM_Mask] = V; break;
-      case 3: case 4: case 7: break;
+      case 0: dbg_wr_vip++;   VIP_Write8(timestamp, A, V);  break;
+      case 1: dbg_wr_other++; VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
+      case 2: dbg_wr_other++; HWCTRL_Write(timestamp, A, V); break;
+      case 5: dbg_wr_wram++;  WRAM[A & 0xFFFF] = V; break;
+      case 6: dbg_wr_other++; if (GPRAM) GPRAM[A & GPRAM_Mask] = V; break;
+      case 3: case 4: case 7: dbg_wr_other++; break;
    }
 }
 
@@ -211,12 +220,12 @@ void MDFN_FASTCALL MemWrite16(v810_timestamp_t &timestamp, uint32 A, uint16 V)
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: VIP_Write16(timestamp, A, V); break;
-      case 1: VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
-      case 2: HWCTRL_Write(timestamp, A, V); break;
-      case 5: StoreU16_LE((uint16 *)&WRAM[A & 0xFFFF], V); break;
-      case 6: if (GPRAM) StoreU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask], V); break;
-      case 3: case 4: case 7: break;
+      case 0: dbg_wr_vip++;   VIP_Write16(timestamp, A, V); break;
+      case 1: dbg_wr_other++; VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
+      case 2: dbg_wr_other++; HWCTRL_Write(timestamp, A, V); break;
+      case 5: dbg_wr_wram++;  StoreU16_LE((uint16 *)&WRAM[A & 0xFFFF], V); break;
+      case 6: dbg_wr_other++; if (GPRAM) StoreU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask], V); break;
+      case 3: case 4: case 7: dbg_wr_other++; break;
    }
 }
 
@@ -475,13 +484,17 @@ void vb_run_frame(void)
    spec.SoundBufSize       = 0;
 
    dbg_vip_calls = 0;
+   dbg_rd_vip = dbg_rd_wram = dbg_rd_gprom = dbg_rd_other = 0;
+   dbg_wr_vip = dbg_wr_wram = dbg_wr_other = 0;
    VIP_StartFrame(&spec);
 
    v810_timestamp = VB_V810->Run(EventHandler);
 
    if (vb_frame_count % 300 == 0)
-      VB_LOG("[VB] frame %u vip_calls=%u ts=%d",
-             (unsigned)vb_frame_count, (unsigned)dbg_vip_calls, (int)v810_timestamp);
+      VB_LOG("[VB] frame %u skip=%d rd:vip=%u wram=%u rom=%u oth=%u wr:vip=%u wram=%u oth=%u",
+             (unsigned)vb_frame_count, (int)!do_render,
+             dbg_rd_vip, dbg_rd_wram, dbg_rd_gprom, dbg_rd_other,
+             dbg_wr_vip, dbg_wr_wram, dbg_wr_other);
 
    FixNonEvents();
    ForceEventUpdates(v810_timestamp);
