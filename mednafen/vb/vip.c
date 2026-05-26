@@ -93,7 +93,7 @@ static uint32 ColorLUT[2][256];
 static int32 BrightnessCache[4];
 static uint32 BrightCLUT[2][4];
 
-static double ColorLUTNoGC[2][256][3];
+static float ColorLUTNoGC[2][256][3];
 static uint32 AnaSlowColorLUT[256][256];
 
 /* A few settings: */
@@ -113,56 +113,52 @@ static void MakeColorLUT(void)
    {
       for(i = 0; i < 256; i++)
       {
-         double prod    = (double)i / 255;
-         double r       = prod; 
-         double g       = prod; 
-         double b       = prod;
-         /* TODO: Use correct gamma curve, instead of approximation. */
-         double r_prime = pow(r, 1.0 / 2.2);
-         double g_prime = pow(g, 1.0 / 2.2);
-         double b_prime = pow(b, 1.0 / 2.2);
+         float prod    = (float)i / 255.0f;
+         float r       = prod;
+         float g       = prod;
+         float b       = prod;
+         float r_prime = powf(r, 1.0f / 2.2f);
+         float g_prime = powf(g, 1.0f / 2.2f);
+         float b_prime = powf(b, 1.0f / 2.2f);
 
          switch(VB3DMode)
          {
             case VB3DMODE_ANAGLYPH:
-               r_prime = r_prime * ((Anaglyph_Colors[lr ^ VB3DReverse] >> 16) & 0xFF) / 255;
-               g_prime = g_prime * ((Anaglyph_Colors[lr ^ VB3DReverse] >> 8) & 0xFF) / 255;
-               b_prime = b_prime * ((Anaglyph_Colors[lr ^ VB3DReverse] >> 0) & 0xFF) / 255;
+               r_prime = r_prime * ((Anaglyph_Colors[lr ^ VB3DReverse] >> 16) & 0xFF) / 255.0f;
+               g_prime = g_prime * ((Anaglyph_Colors[lr ^ VB3DReverse] >> 8) & 0xFF) / 255.0f;
+               b_prime = b_prime * ((Anaglyph_Colors[lr ^ VB3DReverse] >> 0) & 0xFF) / 255.0f;
                break;
             default:
-               r_prime = r_prime * ((Default_Color >> 16) & 0xFF) / 255;
-               g_prime = g_prime * ((Default_Color >> 8) & 0xFF) / 255;
-               b_prime = b_prime * ((Default_Color >> 0) & 0xFF) / 255;
+               r_prime = r_prime * ((Default_Color >> 16) & 0xFF) / 255.0f;
+               g_prime = g_prime * ((Default_Color >> 8) & 0xFF) / 255.0f;
+               b_prime = b_prime * ((Default_Color >> 0) & 0xFF) / 255.0f;
                break;
          }
-         ColorLUTNoGC[lr][i][0] = pow(r_prime, 2.2 / 1.0);
-         ColorLUTNoGC[lr][i][1] = pow(g_prime, 2.2 / 1.0);
-         ColorLUTNoGC[lr][i][2] = pow(b_prime, 2.2 / 1.0);
+         ColorLUTNoGC[lr][i][0] = powf(r_prime, 2.2f);
+         ColorLUTNoGC[lr][i][1] = powf(g_prime, 2.2f);
+         ColorLUTNoGC[lr][i][2] = powf(b_prime, 2.2f);
 
          ColorLUT[lr][i] = MAKECOLOR((int)(r_prime * 255), (int)(g_prime * 255), (int)(b_prime * 255), 0);
       }
    }
 
-   /* Anaglyph slow-mode LUT calculation */
+   /* Anaglyph slow-mode LUT — use float to stay in hardware FPU on ARM */
    for(l_b = 0; l_b < 256; l_b++)
    {
       for(r_b = 0; r_b < 256; r_b++)
       {
-         double r_prime, g_prime, b_prime;
-         double r = ColorLUTNoGC[0][l_b][0] + ColorLUTNoGC[1][r_b][0];
-         double g = ColorLUTNoGC[0][l_b][1] + ColorLUTNoGC[1][r_b][1];
-         double b = ColorLUTNoGC[0][l_b][2] + ColorLUTNoGC[1][r_b][2];
+         float r_prime, g_prime, b_prime;
+         float r = (float)(ColorLUTNoGC[0][l_b][0] + ColorLUTNoGC[1][r_b][0]);
+         float g = (float)(ColorLUTNoGC[0][l_b][1] + ColorLUTNoGC[1][r_b][1]);
+         float b = (float)(ColorLUTNoGC[0][l_b][2] + ColorLUTNoGC[1][r_b][2]);
 
-         if(r > 1.0)
-            r = 1.0;
-         if(g > 1.0)
-            g = 1.0;
-         if(b > 1.0)
-            b = 1.0;
+         if(r > 1.0f) r = 1.0f;
+         if(g > 1.0f) g = 1.0f;
+         if(b > 1.0f) b = 1.0f;
 
-         r_prime = pow(r, 1.0 / 2.2);
-         g_prime = pow(g, 1.0 / 2.2);
-         b_prime = pow(b, 1.0 / 2.2);
+         r_prime = powf(r, 1.0f / 2.2f);
+         g_prime = powf(g, 1.0f / 2.2f);
+         b_prime = powf(b, 1.0f / 2.2f);
 
          AnaSlowColorLUT[l_b][r_b] = MAKECOLOR(((int)(r_prime * 255)), ((int)(g_prime * 255)), ((int)(b_prime * 255)), 0);
       }

@@ -115,6 +115,7 @@ int eventHandler(PlaydateAPI *playdate, PDSystemEvent event, uint32_t arg)
          pd->display->setRefreshRate(50);
 
          vb_audio_init(pd);
+         vb_set_log(pd->system->logToConsole);
 
          rom_loaded = load_rom("rom.vb");
          if (!rom_loaded)

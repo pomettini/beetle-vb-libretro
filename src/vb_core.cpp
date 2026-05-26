@@ -41,6 +41,17 @@ extern "C" {
    void MDFN_FlushGameCheats(int nosave);
 }
 
+/* ── Debug log ─────────────────────────────────────────────────────────────── */
+
+static void (*vb_log_fn)(const char *fmt, ...) = NULL;
+
+void vb_set_log(void (*fn)(const char *fmt, ...))
+{
+   vb_log_fn = fn;
+}
+
+#define VB_LOG(...) do { if (vb_log_fn) vb_log_fn(__VA_ARGS__); } while(0)
+
 /* ── Global state ──────────────────────────────────────────────────────────── */
 
 V810 *VB_V810 = NULL;
@@ -67,6 +78,7 @@ int      vb_sound_samples = 0;
 uint16_t vb_input_buf     = 0;
 
 static uint8_t vb_low_battery = 0;
+static uint32_t vb_frame_count = 0;
 
 static struct MDFN_Surface surf;
 
@@ -245,11 +257,25 @@ extern "C" void VB_SetEvent(const int type, const v810_timestamp_t next_timestam
       VB_V810->SetEventNT(next_timestamp);
 }
 
+/* One VB frame = 20 MHz / 50 Hz = 400 000 cycles. Allow 2× as a safety budget. */
+#define VB_FRAME_BUDGET 800000
+
 static int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
 {
+   static int eh_count = 0;
+   if (eh_count < 3) {
+      VB_LOG("[VB] EventHandler #%d ts=%d vip=%d timer=%d input=%d",
+             eh_count, (int)timestamp, next_vip_ts, next_timer_ts, next_input_ts);
+      eh_count++;
+   }
+
    if (timestamp >= next_vip_ts)   next_vip_ts   = VIP_Update(timestamp);
    if (timestamp >= next_timer_ts) next_timer_ts = TIMER_Update(timestamp);
    if (timestamp >= next_input_ts) next_input_ts = VBINPUT_Update(timestamp);
+
+   if (timestamp >= VB_FRAME_BUDGET)
+      VB_ExitLoop();
+
    return CalcNextTS();
 }
 
@@ -304,20 +330,25 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    uint32_t  map_size = 0;
    uint64_t  A, sub_A;
 
+   VB_LOG("[VB] build " __DATE__ " " __TIME__);
+   VB_LOG("[VB] load_rom_data: size=%u", (unsigned)size);
+
    if (size != round_up_pow2(size)) return false;
    if (size < 256)                  return false;
    if (size > (1 << 24))           return false;
 
    /* ── Configure display settings for grayscale output ── */
-   setting_vb_lcolor        = 0xFFFFFF; /* white left eye → grayscale */
-   setting_vb_rcolor        = 0x000000; /* black right eye → hidden   */
+   setting_vb_lcolor        = 0xFFFFFF;
+   setting_vb_rcolor        = 0x000000;
    setting_vb_default_color = 0xFFFFFF;
    setting_vb_3dmode        = VB3DMODE_ANAGLYPH;
-   setting_vb_cpu_emulation = 0; /* V810_EMU_MODE_FAST */
+   setting_vb_cpu_emulation = 1;
 
-   /* ── V810 CPU ── */
+   VB_LOG("[VB] new V810");
    VB_V810 = new V810();
+   VB_LOG("[VB] V810::Init ACCURATE");
    VB_V810->Init((V810_Emu_Mode)setting_vb_cpu_emulation, true);
+   VB_LOG("[VB] V810::Init done");
 
    VB_V810->SetMemReadHandlers (MemRead8,  MemRead16,  NULL);
    VB_V810->SetMemWriteHandlers(MemWrite8, MemWrite16, NULL);
@@ -333,41 +364,44 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    Map_Addresses = (uint32_t *)malloc(8192 * 4);
    if (!Map_Addresses) return false;
 
-   /* WRAM */
+   VB_LOG("[VB] SetFastMap WRAM");
    for (A = 0; A < 1ULL << 32; A += (1 << 27))
       for (sub_A = 5ULL << 24; sub_A < (6ULL << 24); sub_A += 65536)
          Map_Addresses[map_size++] = (uint32_t)(A + sub_A);
    WRAM = VB_V810->SetFastMap(Map_Addresses, 65536, map_size, "WRAM");
+   VB_LOG("[VB] WRAM=%p", WRAM);
 
-   /* Cart ROM */
+   VB_LOG("[VB] SetFastMap ROM mask=%u", (unsigned)((size < 65536) ? (65536 - 1) : (size - 1)));
    GPROM_Mask = (size < 65536) ? (65536 - 1) : (size - 1);
    map_size = 0;
    for (A = 0; A < 1ULL << 32; A += (1 << 27))
       for (sub_A = 7ULL << 24; sub_A < (8ULL << 24); sub_A += GPROM_Mask + 1)
          Map_Addresses[map_size++] = (uint32_t)(A + sub_A);
    GPROM = VB_V810->SetFastMap(Map_Addresses, GPROM_Mask + 1, map_size, "Cart ROM");
+   VB_LOG("[VB] GPROM=%p", GPROM);
 
-   /* Mirror ROM images < 64 KiB */
    for (uint64_t i = 0; i < 65536; i += size)
       memcpy(GPROM + i, data, size);
 
-   /* Cart RAM */
+   VB_LOG("[VB] SetFastMap RAM");
    GPRAM_Mask = 0xFFFF;
    map_size = 0;
    for (A = 0; A < 1ULL << 32; A += (1 << 27))
       for (sub_A = 6ULL << 24; sub_A < (7ULL << 24); sub_A += GPRAM_Mask + 1)
          Map_Addresses[map_size++] = (uint32_t)(A + sub_A);
    GPRAM = VB_V810->SetFastMap(Map_Addresses, GPRAM_Mask + 1, map_size, "Cart RAM");
+   VB_LOG("[VB] GPRAM=%p", GPRAM);
 
    free(Map_Addresses);
    memset(GPRAM, 0, GPRAM_Mask + 1);
 
-   /* ── Subsystem init ── */
+   VB_LOG("[VB] VIP_Init");
    VIP_Init();
+   VB_LOG("[VB] VSU_Init");
    VSU_Init(&sbuf[0], &sbuf[1]);
+   VB_LOG("[VB] VBINPUT_Init");
    VBINPUT_Init();
 
-   /* ── VIP configuration ── */
    VIP_Set3DMode(VB3DMODE_ANAGLYPH, false, 1, 0);
    VIP_SetAnaglyphColors(0xFFFFFF, 0x000000);
    VIP_SetDefaultColor(0xFFFFFF);
@@ -376,11 +410,11 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    VIP_SetAllowDrawSkip(false);
    VBINPUT_SetInstantReadHack(true);
 
-   /* ── Surface pointing to our static framebuffer ── */
    surf.pixels      = vb_framebuffer;
    surf.w           = VB_SCREEN_WIDTH;
    surf.h           = VB_SCREEN_HEIGHT;
    surf.pitchinpix  = VB_SCREEN_WIDTH;
+   surf.pitch32     = VB_SCREEN_WIDTH;
    surf.format.bpp        = 32;
    surf.format.colorspace = MDFN_COLORSPACE_RGB;
    surf.format.Rshift     = 16;
@@ -388,11 +422,9 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    surf.format.Bshift     = 0;
    surf.format.Ashift     = 24;
 
-   /* ── Input pointers ── */
    VBINPUT_SetInput(0, "gamepad", &vb_input_buf);
    VBINPUT_SetInput(1, "gamepad", &vb_low_battery);
 
-   /* ── Blip_Buffer (audio synthesis) ── */
    for (int y = 0; y < 2; y++)
    {
       Blip_Buffer_set_sample_rate(&sbuf[y], 44100, 50);
@@ -400,7 +432,6 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
       Blip_Buffer_bass_freq      (&sbuf[y], 20);
    }
 
-   /* ── Cheats (no-ops) ── */
    MDFN_LoadGameCheats(NULL);
    MDFNMP_Init(32768, ((uint64_t)1 << 27) / 32768);
    MDFNMP_AddRAM(65536, 5 << 24, WRAM);
@@ -408,7 +439,10 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
       MDFNMP_AddRAM(GPRAM_Mask + 1, 6 << 24, GPRAM);
    MDFNMP_InstallReadPatches();
 
+   VB_LOG("[VB] VB_Power");
+   vb_frame_count = 0;
    VB_Power();
+   VB_LOG("[VB] load done");
    return true;
 }
 
@@ -417,22 +451,28 @@ void vb_run_frame(void)
    v810_timestamp_t v810_timestamp;
    EmulateSpecStruct spec;
 
+   VB_LOG("[VB] run_frame #%u next_event_ts=%d", (unsigned)vb_frame_count,
+          (int)VB_V810->GetEventNT());
+
    MDFNMP_ApplyPeriodicCheats();
    VBINPUT_Frame();
 
    spec.surface            = &surf;
-   spec.VideoFormatChanged = false;
+   spec.VideoFormatChanged = (vb_frame_count == 0);
    spec.DisplayRect.x      = 0;
    spec.DisplayRect.y      = 0;
    spec.DisplayRect.w      = 0;
    spec.DisplayRect.h      = 0;
-   /* max samples per channel accounting for stride-2 writes */
    spec.SoundBufMaxSize    = (int32)(sizeof(vb_sound_buf) / sizeof(int16_t)) / 2;
    spec.SoundBufSize       = 0;
 
+   VB_LOG("[VB] VIP_StartFrame");
    VIP_StartFrame(&spec);
+   VB_LOG("[VB] V810::Run next_vip=%d next_timer=%d next_input=%d",
+          next_vip_ts, next_timer_ts, next_input_ts);
 
    v810_timestamp = VB_V810->Run(EventHandler);
+   VB_LOG("[VB] V810::Run done ts=%d", (int)v810_timestamp);
 
    FixNonEvents();
    ForceEventUpdates(v810_timestamp);
@@ -447,6 +487,7 @@ void vb_run_frame(void)
    }
 
    VSU_CycleFix = (v810_timestamp + VSU_CycleFix) & 3;
+   vb_frame_count++;
 
    TIMER_ResetTS();
    VBINPUT_ResetTS();

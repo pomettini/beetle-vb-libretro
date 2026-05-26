@@ -34,6 +34,9 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size);
 void vb_run_frame(void);
 void vb_destroy(void);
 
+/* Debug: set a log function so vb_core can emit serial checkpoints */
+void vb_set_log(void (*fn)(const char *fmt, ...));
+
 #ifdef __cplusplus
 }
 #endif

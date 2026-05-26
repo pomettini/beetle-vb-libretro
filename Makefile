@@ -39,6 +39,7 @@ OPT   = -O2 -falign-functions=16 -fomit-frame-pointer
 # ── Preprocessor defines ────────────────────────────────────────────────────
 DEFINES  = -DTARGET_PLAYDATE=1 -DTARGET_EXTENSION=1
 DEFINES += -DWANT_32BPP=1
+DEFINES += -DNDEBUG
 DEFINES += -DMEDNAFEN_VERSION=\"0.9.31\" -DMEDNAFEN_VERSION_NUMERIC=931
 DEFINES += -D__HEAP_SIZE=$(HEAP_SIZE) -D__STACK_SIZE=$(STACK_SIZE)
 
