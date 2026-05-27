@@ -213,6 +213,137 @@ make all       # build both + package into VirtualBoy.pdx
 
 ---
 
+## Compile Flags (TARGET_PLAYDATE)
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `VB_SCANLINES` | `0` | `1` = black-gap scanlines (retro CRT look), `2` = duplicate lines (same density). Halves rendering work but has minimal real-world perf impact since V810 CPU dominates. |
+| `VB_V810_FAST_ONLY` | `1` | Strips `Run_Accurate` (5,744 dead bytes) from the binary. We always init in `V810_EMU_MODE_FAST`, so `Run_Accurate` is never called. With this flag the interpreter fits in the 16KB I-cache (11,183 bytes vs 18,267). |
+| `VB_NO_RENDER` | off | Diagnostic: makes `VIP_DrawBlock` return immediately. Used to isolate V810 CPU cost from VIP rendering cost. |
+
+---
+
+## Performance Architecture
+
+### Frame timing budget
+
+- VB runs at 50 Hz → 20ms per emulated frame.
+- `VB_RENDER_EVERY_N = 8`: full VIP rendering runs only on every 8th frame (≈ every 160ms wall-clock).
+- On the 7 non-render frames, `DrawBlock` is skipped entirely (`skip && InstantDisplayHack && AllowDrawSkip`).
+- Log format: `[VB] frame N: emu=Xms disp=Yms` — `emu` covers one emulated frame including V810 CPU + any VIP work that frame triggered.
+
+### Measured baselines (Mario Clash, menu→demo→menu)
+
+| Build | Light frames | Heavy frames (gameplay) |
+|-------|-------------|------------------------|
+| Full rendering (after all VIP opts) | 20–35 ms | 87–127 ms |
+| VB_NO_RENDER (zero VIP work) | 14–29 ms | 74–106 ms |
+| **Delta (VIP cost)** | ~6 ms | **~13–30 ms** |
+
+**Key finding:** VIP rendering contributes only 13–30ms to a frame that already takes 74–106ms from V810 alone. The V810 CPU interpreter is the dominant bottleneck (~80% of frame time on heavy scenes).
+
+### Why the V810 is slow — SDRAM bottleneck
+
+The Playdate's memory map:
+- **DTCM** `0x20000000–0x2000FFFF` (64 KB) — zero-wait-state, used by the stack.
+- **SDRAM** `0x60000000+` (16 MB external) — ~100–200 ARM cycles per cache miss.
+
+All game data lives in SDRAM:
+- WRAM `0x60270220` (64 KB)
+- ROM `0x60280630` (1 MB)
+- GPRAM `0x60380a40`
+
+The V810 interpreter uses **SetFastMap** for ROM and WRAM (direct pointer dereference, no callback). Every instruction fetch reads 2 bytes from the ROM pointer → SDRAM. The D-cache (16 KB) helps, but during heavy gameplay the V810 instruction working set (complex AI for 10+ enemies) can exceed 16 KB, causing D-cache thrash and effectively throttling the interpreter to ~20–27% of real-time on the worst frames.
+
+CPU benchmark (`main.c`): `1M iterations of x+=i = 44ms` — consistent with the CPU running at 168 MHz (7–8 ARM cycles per loop iteration). The CPU is NOT throttled; the SDRAM latency is the fundamental limit.
+
+---
+
+## VIP Rendering Pipeline (TARGET_PLAYDATE)
+
+### Original Mednafen path (removed for Playdate)
+```
+VIP_DrawBlock → scratch buffer (2bpp column-major) → CopyFBColumnToTarget (768-column pass)
+```
+
+### Playdate path
+```
+VIP_DrawBlock (8bpp row-major scratch) → direct memcpy to surface (row-by-row)
+```
+
+Key changes in `mednafen/vb/vip.c`:
+1. **WANT_8BPP surface** (`-DWANT_8BPP=1`): VIP renders into an 8bpp surface. `BrightCLUT[0][src]` maps the 2-bit VB brightness level to a palette index in one table lookup.
+2. **Direct surface write**: after each `VIP_DrawBlock`, the 8-line scratch buffer is immediately copied to `surface->pixels8` row by row (sequential, cache-friendly). The pack-to-FB and `CopyFBColumnToTarget` passes are skipped entirely for `TARGET_PLAYDATE`.
+3. **Right eye disabled**: `Anaglyph_Colors[1] = 0` causes all `lron[1]` checks to be false, eliminating all right-eye work inside `DrawBG`/`DrawOBJ`/`DrawAffine` and inside `VIP_DrawBlock`'s own world loop.
+4. **`InstantDisplayHack`**: batches all column-copy work into one pass at XPEND time. Already enabled; the `TARGET_PLAYDATE` path skips the column loop body entirely.
+
+### DrawingBuffers
+`DrawingBuffers[2][512 * 8]` — 8 KB stack allocation in `VIP_Update`. Only `DrawingBuffers[0]` (left eye) is used for `TARGET_PLAYDATE`. The right-eye buffer `DrawingBuffers[1]` is allocated but never written.
+
+---
+
+## V810 Interpreter Optimisations
+
+### ITCM / DTCM copy (hot callbacks)
+
+The five V810 bus callbacks (`MemRead8`, `MemRead16`, `MemWrite8`, `MemWrite16`, `EventHandler`) are placed in `.itcm.v810` section. At the start of each call to `vb_run_frame()`, they are copied to a 1 KB stack buffer (`stk_buf[1024]`) in `vb_run_frame()`'s own stack frame (which lives in DTCM).
+
+Why the stack frame is safe: the callee frames grow **below** `stk_buf`; they cannot overwrite it. The stack-frame allocation guarantees the copy stays live for the entire duration of `VB_V810->Run()`.
+
+`-mlong-calls` on `vb_core.cpp`: forces all outgoing calls to use `LDR rN, [pc, #offset]; BLX rN` (absolute literal pool) instead of PC-relative `B.W`. Required so the copied code can call external functions from its new (stack) address.
+
+Section size: `__itcm_v810_end - __itcm_v810_start = 0x2A0` (672 bytes including 32-byte alignment fill). `EventHandler` is a static function — not exported as a linker symbol — confirmed present at offset `0x1E4` in the section via `arm-none-eabi-objdump -d --section=.itcm.v810`.
+
+### Removing Run_Accurate (VB_V810_FAST_ONLY)
+
+`v810_cpu.cpp` compiles two full copies of the interpreter loop via `v810_oploop.inc`:
+- `Run_Fast` (5,060 bytes) — the path always used (`V810_EMU_MODE_FAST`).
+- `Run_Accurate` (5,744 bytes) — dead code, never called.
+
+Before: total `.text` = **18,267 bytes** (overflows the 16 KB I-cache).  
+After (`VB_V810_FAST_ONLY=1`): total `.text` = **11,183 bytes** (fits in I-cache).
+
+### -Os + -falign-loops=32 for v810_cpu.cpp
+
+Compiled with `-Os` (size-optimise) and `-falign-loops=32` (align inner loops to I-cache line boundaries). This minimises the interpreter's I-cache footprint and ensures the tight dispatch loop doesn't straddle cache lines.
+
+---
+
+## Diagnostic Tools
+
+### World-count logging
+
+`VIP_DrawBlock` in `vip_draw.inc` logs the number of processed worlds once every 50 renders on `block_no == 0`:
+```
+[VIP] worlds=N
+```
+Correlation with frame time (Mario Clash):
+- `worlds=0–2` → menu / title → 20–35 ms frames
+- `worlds=10` → mid-complexity scene → 32–35 ms frames  
+- `worlds=29` → heavy gameplay (10+ enemies) → 97–126 ms frames
+
+`worlds=29` means world indices 31 down to 3 were all rendered; world 2 had the END bit set.
+
+The logging uses `VIP_LOG(...)` which wraps `vb_log_fn` (defined externally from `vb_core.cpp`). The extern is declared at the top of `vip_draw.inc` to avoid a missing-symbol linker error since `vip.c` has no access to the VB_LOG macro.
+
+### VB_NO_RENDER flag
+
+`#if defined(VB_NO_RENDER) && VB_NO_RENDER` at the top of `VIP_DrawBlock` makes it return immediately. Used to measure pure V810 CPU cost, isolating it from VIP rendering. Result confirmed V810 dominates at 74–106 ms on heavy frames.
+
+---
+
+## Experiments That Did Not Help
+
+### VIP scanlines (VB_SCANLINES=1)
+
+Hypothesis: halving the inner `y` loop in `VIP_DrawBlock` (step 2 instead of 1) would halve DrawBG/DrawOBJ calls and give ~2× VIP speedup.
+
+Result: negligible improvement on heavy frames. Why: VIP accounts for only 13–30 ms per frame (confirmed by VB_NO_RENDER test). Halving 20 ms saves ~10 ms against a 100 ms frame — not enough to be noticeable. Additionally, text in Mario Clash becomes unreadable with black-gap scanlines. **Reverted to `VB_SCANLINES=0`.**
+
+Side effect: `VIP_LOG` macro and `extern vb_log_fn` for `vip_draw.inc` were added during this work and are still in place for the world-count diagnostic.
+
+---
+
 ## Discovery Log
 
 ### 2026-05-26
@@ -231,3 +362,17 @@ make all       # build both + package into VirtualBoy.pdx
 - `pdc` copies unknown file types by default (no `-k` flag); `.vb` ROMs are included in the PDX automatically.
 - Simulator crashed on first run because `update()` called `vb_run_frame()` even when ROM loading failed (VB_V810 was NULL). Fixed with `rom_loaded` guard.
 - Newlib syscall stubs (`_exit`, `_write`, etc.) must be provided manually for the ARM bare-metal target — added `src/syscalls_stub.c`.
+
+### 2026-05-27 — Performance Profiling & Optimisation
+
+- **Display pipeline rewritten for WANT_8BPP**: eliminated pack-to-FB (column-major 2bpp) and `CopyFBColumnToTarget` (768-column pass). Now writes directly from `DrawingBuffers[0]` to `surface->pixels8` row by row inside `VIP_Update`.
+- **Right eye fully disabled at VIP level**: `Anaglyph_Colors[1] = 0` causes all right-eye world/sprite rendering to be skipped inside `vip_draw.inc`.
+- **ITCM callback copy**: `MemRead8/16`, `MemWrite8/16`, `EventHandler` copied to 1 KB stack buffer in DTCM at start of each `vb_run_frame()`. Dispatcher uses `TO_STK()` macro for address relocation. Stack-frame safety guarantee: callee frames grow below the buffer and cannot corrupt it.
+- **First ITCM buffer too large**: `stk_buf[2048]` caused stack overflow (section is only 672 bytes). Reduced to `stk_buf[1024]`.
+- **EventHandler is a static function**: does not appear in the linker map's global symbol table. Confirmed present at offset `0x1E4` in `.itcm.v810` via `objdump`. `TO_STK(EventHandler)` arithmetic is correct.
+- **VB_RENDER_EVERY_N=8**: render only 1 in 8 emulated frames. Light (non-render) frames take ~12ms. Render frames were 87–127ms on heavy scenes.
+- **World-count diagnostic added**: `[VIP] worlds=N` logged from `vip_draw.inc`. Discovered `worlds=29` (nearly all 32 worlds active) correlates exactly with the 97–126ms heavy frames in Mario Clash.
+- **Scanlines experiment (VB_SCANLINES=1)**: halved the inner y-loop step in `VIP_DrawBlock`. No meaningful improvement (VIP is only ~20% of frame time). Text became unreadable. Reverted.
+- **VB_NO_RENDER diagnostic**: `VIP_DrawBlock` returns immediately. Result: heavy frames still 74–106ms — **V810 CPU is the real bottleneck**, not VIP rendering. VIP contributes only 13–30ms per frame.
+- **CPU benchmark analysis**: `1M loop iters = 44ms` ≈ 168MHz (7–8 cycles/iter) — CPU is not throttled. The effective V810 execution rate is limited by SDRAM D-cache misses on ROM instruction fetches via SetFastMap.
+- **Run_Accurate stripped (VB_V810_FAST_ONLY)**: `Run_Accurate` (5,744 bytes) is dead code — `Init FAST` is always used. Removing it brings total interpreter text from 18,267 → 11,183 bytes, under the 16KB I-cache limit.
