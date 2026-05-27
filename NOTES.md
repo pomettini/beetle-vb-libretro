@@ -394,3 +394,40 @@ Side effect: `VIP_LOG` macro and `extern vb_log_fn` for `vip_draw.inc` were adde
   - DTCM = 64 KB. Stack needs ~54 KB for the RTOS task loop + init. Remaining margin: only 7,736 bytes.
   - WRAM = 64 KB. Even after aggressive stack shrinking there is no room for a full 64 KB static array in DTCM. The plan is not feasible within the hardware constraints.
   - The D-cache pressure problem (V810 ROM instruction reads vs. WRAM reads competing for 16 KB D-cache) **cannot be solved via DTCM placement of WRAM**.
+
+- **Root cause of "Run loop stalled >10 seconds" crash identified and fixed**:
+  - `VB_EVENT_NONONO = 0x7fffffff`. When VIP display is off, timer is disabled, and input `ReadCounter = 0`, all three event sources return NONONO.
+  - `CalcNextTS()` returns `0x7fffffff` → `VB_V810->SetEventNT(0x7fffffff)` → V810 runs **2.1 billion emulated cycles** without calling EventHandler.
+  - `VB_FRAME_BUDGET` (800,000 cycles) is checked INSIDE EventHandler — which is never called — so the budget check never fires. The Playdate's 10-second watchdog kills the task.
+  - **Fix**: clamp EventHandler's return value to `VB_FRAME_BUDGET`. `return (next_ts > VB_FRAME_BUDGET) ? VB_FRAME_BUDGET : next_ts;` ensures EventHandler is called at most every 800,000 cycles regardless of event state. Normal gameplay is unaffected (VIP fires at ~400,000 cycles, well below the budget).
+  - **Confirmed**: game ran past frame 4200 without stalling. The trigger was a level-loading scene where VIP display goes dark, confirmed by visible loading on device.
+
+- **Early-exit dispatch + `__builtin_prefetch` (PLD) added to MemRead8/16 / MemWrite8/16**:
+  - MemRead16: fast path checks `A >> 24 == 7` (ROM) first with `__builtin_expect(..., 1)`, then issues `__builtin_prefetch(&GPROM[(A+32) & GPROM_Mask], 0, 0)` before the load. Fallback goes to `switch` for other address regions.
+  - MemWrite8/16: fast path for `A >> 24 == 5` (WRAM) first, fallback to switch.
+  - MemRead8: fast path for ROM (no prefetch — only 1 byte, not an instruction fetch).
+  - ITCM section size after these changes: 672 → 676 bytes (well under 1024-byte stk_buf).
+  - **Result (Wario Land, level 2 demo, worlds=12–16)**: frames 41–159ms. Essentially unchanged from pre-prefetch baseline. PLD does not meaningfully hide SDRAM latency here because the V810 instruction access pattern is too branchy — by the time the prefetched line arrives in D-cache, the program counter has typically branched elsewhere. The early-exit dispatch saves one `switch` comparison on the common ROM path but the gain is within measurement noise.
+
+- **VB_FRAME_BUDGET halved (800 000 → 400 000) — null result**:
+  - Hypothesis: halving the budget halves V810 work per Playdate tick, halving frame times.
+  - Result: frame times essentially unchanged (131ms → 131ms for worlds=16). The game was already completing 1 VB frame (~400 000 cycles) per Playdate tick even with the 800 000 budget. The extra 400 000 cycles were idle time (V810 halted via SetIdleHalt while waiting for VIP IRQ). The 800 000 budget was doing 2 game frames per tick only during idle-free scenes, which were not the bottleneck.
+  - Budget reduced to 400 000 retained (now emulates exactly 1 VB frame per Playdate tick — cleaner 1:1 ratio).
+
+- **`__attribute__((optimize("O2")))` on Run_Fast (hot interpreter loop)**:
+  - Approach: keep whole file at `-Os` to stay under 16 KB I-cache, but apply per-function `-O2` to `Run_Fast` for better register allocation (fewer spills to SDRAM on the inner loop).
+  - Code sizes: Run_Fast at -Os = 5,060 bytes; at per-function -O2 = 7,108 bytes. Total interpreter: 11,183 → 13,157 bytes (still under 16 KB I-cache limit).
+  - Result: frame 600 (worlds=14): 48ms → 41ms (-15%). All other frames within noise. Heavy frames (worlds=16) still 100–144ms — no change.
+  - Interpretation: -O2 register allocation helps slightly on moderate scenes where register spill was occasional. On worst-case scenes the bottleneck is purely SDRAM latency on ROM instruction fetches; no amount of register allocation affects that.
+  - Change retained (free improvement on moderate frames, no downside).
+
+- **Performance ceiling assessment (2026-05-27)**:
+  - All straightforward micro-optimisations exhausted: ITCM copy, VB_V810_FAST_ONLY, early-exit dispatch, PLD prefetch, right-eye disable, VIP scanline skip (reverted), VB_DISABLE_AUDIO, VB_RENDER_EVERY_N=8, half-budget (null), -O2 Run_Fast (marginal).
+  - The V810 interpreter already uses computed-goto dispatch (`goto *op_goto_table[opcode]`) — no switch overhead to eliminate.
+  - Heavy frames (worlds=16, Wario Land level 2) still take 100–144ms vs 20ms budget — 5–7× over.
+  - Measured cost: ~55 ARM cycles per V810 cycle on heavy scenes. At 168 MHz and 400 K V810 cycles/frame: 22 M ARM cycles = ~131ms. SDRAM miss penalty (100–200 ARM cycles) dominates; ~1 miss per 2–3 V810 instructions.
+  - **Remaining approaches with meaningful upside (all multi-day projects)**:
+    1. **JIT / basic-block compiler**: generate ARM Thumb-2 from V810 basic blocks, execute natively. Eliminates instruction fetch latency entirely. Realistic gain: 5–10×. Months of work.
+    2. **ARM assembly inner loop**: hand-write fetch/decode/dispatch in Thumb-2 assembly. Better scheduling around load latency, software pipelining. Realistic gain: 1.5–2×. Weeks of work.
+    3. **Dynamic emulation frame skip**: skip entire VB frames when behind wall clock. Does not reduce per-frame time but keeps game advancing at the cost of dropped input frames.
+  - Conclusion: consistent playable framerates on all scenes are not achievable without a JIT or assembly rewrite. Light/moderate scenes (worlds ≤ 12) at 41–60ms could be made playable with aggressive frame skipping and a 30fps Playdate target.

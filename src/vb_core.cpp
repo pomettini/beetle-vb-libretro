@@ -182,14 +182,16 @@ static void HWCTRL_Write(v810_timestamp_t &timestamp, uint32 A, uint8 V)
 VB_ITCM uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
 {
    A &= (1 << 27) - 1;
+   /* Fast path: ROM (instruction/data reads from cartridge) */
+   if (__builtin_expect(A >> 24 == 7, 1))
+      return GPROM[A & GPROM_Mask];
    switch (A >> 24)
    {
       case 0: return VIP_Read8(timestamp, A);
       case 2: return HWCTRL_Read(timestamp, A);
-      case 1: case 3: case 4: break;
       case 5: return WRAM[A & 0xFFFF];
       case 6: if (GPRAM) return GPRAM[A & GPRAM_Mask]; break;
-      case 7: return GPROM[A & GPROM_Mask];
+      default: break;
    }
    return 0;
 }
@@ -197,14 +199,21 @@ VB_ITCM uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
 VB_ITCM uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
 {
    A &= (1 << 27) - 1;
+   /* Fast path: ROM instruction fetch — by far the most frequent call.
+      PLD pre-warms the next cache line to hide SDRAM latency while the
+      CPU processes the current instruction. */
+   if (__builtin_expect(A >> 24 == 7, 1))
+   {
+      __builtin_prefetch(&GPROM[(A + 32) & GPROM_Mask], 0, 0);
+      return LoadU16_LE((uint16 *)&GPROM[A & GPROM_Mask]);
+   }
    switch (A >> 24)
    {
       case 0: vip_reads_window++; return VIP_Read16(timestamp, A);
       case 2: return HWCTRL_Read(timestamp, A);
-      case 1: case 3: case 4: break;
       case 5: return LoadU16_LE((uint16 *)&WRAM[A & 0xFFFF]);
       case 6: if (GPRAM) return LoadU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask]); break;
-      case 7: return LoadU16_LE((uint16 *)&GPROM[A & GPROM_Mask]);
+      default: break;
    }
    return 0;
 }
@@ -212,28 +221,38 @@ VB_ITCM uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
 VB_ITCM void MDFN_FASTCALL MemWrite8(v810_timestamp_t &timestamp, uint32 A, uint8 V)
 {
    A &= (1 << 27) - 1;
+   /* Fast path: WRAM — the game's primary data store */
+   if (__builtin_expect(A >> 24 == 5, 1))
+   {
+      WRAM[A & 0xFFFF] = V;
+      return;
+   }
    switch (A >> 24)
    {
       case 0: VIP_Write8(timestamp, A, V);  break;
       case 1: VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
       case 2: HWCTRL_Write(timestamp, A, V); break;
-      case 5: WRAM[A & 0xFFFF] = V; break;
       case 6: if (GPRAM) GPRAM[A & GPRAM_Mask] = V; break;
-      case 3: case 4: case 7: break;
+      default: break;
    }
 }
 
 VB_ITCM void MDFN_FASTCALL MemWrite16(v810_timestamp_t &timestamp, uint32 A, uint16 V)
 {
    A &= (1 << 27) - 1;
+   /* Fast path: WRAM */
+   if (__builtin_expect(A >> 24 == 5, 1))
+   {
+      StoreU16_LE((uint16 *)&WRAM[A & 0xFFFF], V);
+      return;
+   }
    switch (A >> 24)
    {
       case 0: VIP_Write16(timestamp, A, V); break;
       case 1: VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
       case 2: HWCTRL_Write(timestamp, A, V); break;
-      case 5: StoreU16_LE((uint16 *)&WRAM[A & 0xFFFF], V); break;
       case 6: if (GPRAM) StoreU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask], V); break;
-      case 3: case 4: case 7: break;
+      default: break;
    }
 }
 
@@ -282,7 +301,8 @@ extern "C" void VB_SetEvent(const int type, const v810_timestamp_t next_timestam
 }
 
 /* One VB frame = 20 MHz / 50 Hz = 400 000 cycles. Allow 2× as a safety budget. */
-#define VB_FRAME_BUDGET 800000
+/* HALF-CLOCK TEST: budget halved to 400 000 (= 1 VB frame) to reduce ARM work per Playdate frame. */
+#define VB_FRAME_BUDGET 400000
 
 static VB_ITCM int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
 {
@@ -306,7 +326,13 @@ static VB_ITCM int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp
       vb_idle_mode = true;
    VB_V810->SetIdleHalt(vb_idle_mode);
 
-   return CalcNextTS();
+   /* Cap the next event timestamp at VB_FRAME_BUDGET.  Without this, if all
+      event sources return VB_EVENT_NONONO (0x7fffffff) — e.g. VIP display off,
+      timer disabled, input ReadCounter=0 — CalcNextTS() returns 0x7fffffff and
+      the V810 runs ~2 billion cycles without calling EventHandler, bypassing the
+      VB_FRAME_BUDGET check above and stalling the Playdate watchdog (>10s). */
+   int32 next_ts = CalcNextTS();
+   return (next_ts > VB_FRAME_BUDGET) ? (int32)VB_FRAME_BUDGET : next_ts;
 }
 
 /* ── ITCM function pointer types (stack-copy approach) ──────────────────────── */

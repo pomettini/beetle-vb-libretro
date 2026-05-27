@@ -530,6 +530,9 @@ void V810::Run_Accurate(int32 MDFN_FASTCALL (*event_handler)(const v810_timestam
 #define RB_RDOP(PC_offset, ...) LoadU16_LE((uint16 *)&PC_ptr[PC_offset])
 #endif
 
+/* -O2 for the hot interpreter loop: better register allocation than -Os without
+   the code-size explosion of full -O3, and keeps total text under the 16 KB I-cache. */
+__attribute__((optimize("O2")))
 void V810::Run_Fast(int32 MDFN_FASTCALL (*event_handler)(const v810_timestamp_t timestamp))
 {
  const bool RB_AccurateMode = false;
