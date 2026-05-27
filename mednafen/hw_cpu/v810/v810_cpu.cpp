@@ -53,6 +53,7 @@ found freely through public domain sources.
 
 #include "v810_opt.h"
 #include "v810_cpu.h"
+#include "v810_jit.h"
 
 V810::V810()
 {
@@ -79,6 +80,8 @@ V810::V810()
 
    v810_timestamp = 0;
    next_event_ts = 0x7FFFFFFF;
+
+   jit_lookup_fn = NULL;
 }
 
 V810::~V810()
@@ -538,7 +541,22 @@ void V810::Run_Fast(int32 MDFN_FASTCALL (*event_handler)(const v810_timestamp_t 
  const bool RB_AccurateMode = false;
 
  #define RB_ADDBT(n,o,p)
- #define RB_CPUHOOK(n)
+
+ /* JIT dispatch: if no interrupt pending and a block is cached for this PC,
+    execute it and skip the interpreter for this iteration. */
+ #define RB_CPUHOOK(n) \
+    if (!IPendingCache && jit_lookup_fn) { \
+        JitBlock *_blk = (JitBlock *)jit_lookup_fn((uint32)(n)); \
+        if (_blk && _blk->code_thumb) { \
+            JitBlockFn _fn = (JitBlockFn)_blk->code_thumb; \
+            JitResult  _r  = _fn(P_REG, S_REG, (uint32)timestamp_rl, \
+                                 (uint32)next_event_ts); \
+            timestamp_rl = (v810_timestamp_t)_r.timestamp; \
+            RB_SETPC(_r.next_pc); \
+            P_REG[0] = 0; \
+            continue; \
+        } \
+    }
 
  #include "v810_oploop.inc"
 

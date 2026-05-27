@@ -32,6 +32,7 @@
 #include "mednafen/vb/vip.h"
 #include "mednafen/vb/input.h"
 #include "mednafen/hw_cpu/v810/v810_cpu.h"
+#include "v810_jit.h"
 
 #include "vb_core.h"
 
@@ -255,6 +256,36 @@ VB_ITCM void MDFN_FASTCALL MemWrite16(v810_timestamp_t &timestamp, uint32 A, uin
       default: break;
    }
 }
+
+/* ── JIT memory callbacks (C-ABI, called from generated Thumb-2 code) ────────── */
+
+extern "C" {
+
+uint32_t jit_mem_r8s(uint32_t ts, uint32_t addr)
+{
+   v810_timestamp_t t = (v810_timestamp_t)ts;
+   return (uint32_t)(int32_t)(int8_t)MemRead8(t, addr);
+}
+
+uint32_t jit_mem_r16s(uint32_t ts, uint32_t addr)
+{
+   v810_timestamp_t t = (v810_timestamp_t)ts;
+   return (uint32_t)(int32_t)(int16_t)MemRead16(t, addr);
+}
+
+void jit_mem_w8(uint32_t ts, uint32_t addr, uint32_t val)
+{
+   v810_timestamp_t t = (v810_timestamp_t)ts;
+   MemWrite8(t, addr, (uint8)val);
+}
+
+void jit_mem_w16(uint32_t ts, uint32_t addr, uint32_t val)
+{
+   v810_timestamp_t t = (v810_timestamp_t)ts;
+   MemWrite16(t, addr, (uint16)val);
+}
+
+} /* extern "C" */
 
 /* ── Event scheduling ────────────────────────────────────────────────────────── */
 
@@ -506,6 +537,9 @@ bool vb_load_rom_data(const uint8_t *data, uint32_t size)
    if ((GPRAM_Mask + 1) >= 32768)
       MDFNMP_AddRAM(GPRAM_Mask + 1, 6 << 24, GPRAM);
    MDFNMP_InstallReadPatches();
+
+   jit_init(GPROM, GPROM_Mask);
+   VB_V810->SetJITLookup((void *(*)(uint32))jit_lookup);
 
    VB_LOG("[VB] VB_Power");
    vb_frame_count = 0;

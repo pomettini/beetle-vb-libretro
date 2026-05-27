@@ -431,3 +431,47 @@ Side effect: `VIP_LOG` macro and `extern vb_log_fn` for `vip_draw.inc` were adde
     2. **ARM assembly inner loop**: hand-write fetch/decode/dispatch in Thumb-2 assembly. Better scheduling around load latency, software pipelining. Realistic gain: 1.5–2×. Weeks of work.
     3. **Dynamic emulation frame skip**: skip entire VB frames when behind wall clock. Does not reduce per-frame time but keeps game advancing at the cost of dropped input frames.
   - Conclusion: consistent playable framerates on all scenes are not achievable without a JIT or assembly rewrite. Light/moderate scenes (worlds ≤ 12) at 41–60ms could be made playable with aggressive frame skipping and a 30fps Playdate target.
+
+### 2026-05-28 — V810 Basic-Block JIT Compiler
+
+**Design**: V810 basic blocks translated once to ARM Thumb-2, cached in a 128 KB SDRAM code buffer. Generated code runs via the I-cache (separate 16 KB from the D-cache). A hot game loop (50–200 instructions ≈ 200–800 halfwords) fits in the I-cache → near-100% hit rate, eliminating the SDRAM D-cache miss that drives the interpreter cost.
+
+**New files**:
+- `src/v810_jit.h` — public API: `JitBlock`, `JitResult`, `JitBlockFn`, `JitLookupFn`, `jit_init`, `jit_flush`, `jit_lookup`, plus C-ABI memory callback declarations.
+- `src/v810_jit.c` — Thumb-2 code generator (~700 lines).
+
+**Integration**:
+- `v810_cpu.h`: added `void *(*jit_lookup_fn)(uint32)` private member; `SetJITLookup()` public setter; `GetPREGPtr()`/`GetSREGPtr()` accessors.
+- `v810_cpu.cpp`: `#include "v810_jit.h"`; `RB_CPUHOOK(n)` redefined to dispatch JIT blocks — if `!IPendingCache && jit_lookup_fn`, call `jit_lookup_fn(pc)`, execute the block, update `timestamp_rl` + PC, `continue`. Constructor initialises `jit_lookup_fn = NULL`.
+- `vb_core.cpp`: C-ABI wrappers `jit_mem_r8s/r16s/w8/w16` bridge JIT-generated calls to existing `MemRead8/16` and `MemWrite8/16`. `vb_load_rom_data()` calls `jit_init(GPROM, GPROM_Mask)` then `VB_V810->SetJITLookup(jit_lookup)`.
+- `Makefile`: `src/v810_jit.c` added to `C_SRC`.
+
+**ARM register conventions inside each block**:
+- `r8` = P_REG base, `r7` = S_REG base, `r6` = V810 timestamp, `r5` = next_event_ts.
+- `r0–r3`, `r9`, `r10` = scratch. PUSH/POP `{r4–r8, lr/pc}` at block entry/exit.
+- Return: `JitResult` in `r0:r1` (next_pc, timestamp) per ARM AAPCS.
+
+**Thumb-2 encoding notes** (verified against ARM ARM):
+- `MOV.W Rd, Rm, LSR #N`: hw1=0xEA4F, hw2=(imm3<<12)|(Rd<<8)|(imm2<<6)|(01<<4)|Rm where imm3=N>>2, imm2=N&3. A common mistake: placing imm3 in imm2 position gives shift-by-0 (bug in shift=1 case: 0x0110 not 0x0150).
+- `PUSH {r4–r8, lr}` = 0xE92D, 0x41F0 (not 0xE82D — check the Rlist bit for r8 = bit 8 = 0x0100, so mask = 0x01F0 + lr bit 14 = 0x4000 → 0x41F0).
+- BL to absolute address: encode as S/I1/I2/J1/J2 with J1=~(I1^S), J2=~(I2^S).
+- `ADD.W r6, r6, #N` (ADDCLOCK): hw1=0xF106, hw2=0x0600|N. Encoding is T3 (modified immediate), not T4.
+
+**PSW flag model**:
+- After ARM ADDS: `MRS r2, APSR; LSR.W r2, r2, #28` → bits[3:0]=[N,Z,C,V]; `ROR.W r2, r2, #2` → [C,V,N,Z] = V810 [CY,OV,S,Z].
+- After ARM SUBS: same sequence plus `EOR r2, r2, #8` to invert CY (ARM carry = !borrow).
+- Logic ops: mask=0x3 (S,Z only; CY and OV always 0 for OR/AND/XOR/NOT).
+
+**Supported V810 instructions** (translated inline):
+- ALU reg-reg: MOV ADD SUB CMP SHL SHR SAR OR AND XOR NOT
+- ALU imm5: MOV_I ADD_I CMP_I SHL_I SHR_I SAR_I SETF
+- ALU imm16: MOVEA ADDI ORI ANDI XORI MOVHI
+- Branches: all 16 conditions (BV/BL/BE/BNH/BN/BR/BLT/BLE/BNV/BNC/BNE/BH/BP/NOP/BGE/BGT), JR, JAL, JMP
+- Memory: LD_B LD_H LD_W ST_B ST_H ST_W (via C-ABI callbacks)
+- EI (ends block; interpreter handles interrupt re-enable)
+
+**Branch condition encoding trap**: branches use op7=0x40–0x4F (single table entries, not doubled). Two conditions share each op6 value (e.g., BV op7=0x40 and BL op7=0x41 both have op6=0x20). Condition code = `op7 - 0x40`, NOT `op6 - 0x20`.
+
+**Block cache**: direct-mapped, 1024 slots, keyed by `(pc>>1) & 0x3FF`. Only translates ROM-space code (upper byte = 7). On overflow flushes all and restarts from position 0.
+
+**Build result**: clean build, both ARM device and simulator targets.

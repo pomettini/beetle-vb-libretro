@@ -85,6 +85,7 @@ C_SRC += src/vb_input.c
 C_SRC += src/vb_audio.c
 C_SRC += src/mempatcher_stub.c
 C_SRC += src/syscalls_stub.c
+C_SRC += src/v810_jit.c
 C_SRC += mednafen/vb/vip.c
 C_SRC += mednafen/vb/vsu.c
 C_SRC += mednafen/vb/timer.c

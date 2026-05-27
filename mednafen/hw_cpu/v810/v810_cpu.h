@@ -212,7 +212,18 @@ class V810
 
  uint32 GetSR(const unsigned int which);
 
+ /* Direct array access for JIT use (P_REG is guaranteed at offset 0). */
+ uint32 *GetPREGPtr(void) { return P_REG; }
+ uint32 *GetSREGPtr(void) { return S_REG; }
+
+ /* Register a JIT block-lookup function.  Pass NULL to disable JIT. */
+ void SetJITLookup(void *(*fn)(uint32)) { jit_lookup_fn = fn; }
+
  private:
+
+ /* JIT block lookup: returns JitBlock* or NULL for interpreter fallback.
+    Declared as void* to avoid pulling v810_jit.h into every consumer. */
+ void *(*jit_lookup_fn)(uint32);
 
  /* Make sure P_REG[] is the first variable/array in this class, 
     so non-zero offset encoding (at assembly level) 
