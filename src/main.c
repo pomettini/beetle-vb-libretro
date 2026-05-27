@@ -21,6 +21,37 @@
 static PlaydateAPI *pd;
 static bool rom_loaded = false;
 
+/* ── Stack high-water mark via FreeRTOS 0xA5 fill ────────────────────────── */
+#ifdef TARGET_PLAYDATE
+/* SP captured at eventHandler entry — a fixed reference point in the stack. */
+static uint32_t sc_entry_sp;
+
+/* Scan DOWNWARD from sc_entry_sp for the first 0xA5 byte (FreeRTOS pre-fill).
+   Returns bytes used below the eventHandler entry level (our code + init). */
+static uint32_t stack_hwm(void)
+{
+   const uint8_t *p   = (const uint8_t *)sc_entry_sp;
+   const uint8_t *lim = (const uint8_t *)0x20000200U; /* stop 512B above DTCM base */
+   while (p > lim && *p != 0xA5u) p--;
+   return sc_entry_sp - (uint32_t)p;
+}
+
+/* One-time DTCM scan: find the longest contiguous 0xA5 run.
+   Start = deepest frame ever reached.  Length = remaining stack margin. */
+static void stack_scan_dtcm(void)
+{
+   const uint8_t *d = (const uint8_t *)0x20000000U;
+   uint32_t bs = 0, bl = 0, cs = 0, cl = 0;
+   for (uint32_t i = 0; i < 65536; i++) {
+      if (d[i] == 0xA5u) { if (!cl) cs = i; cl++; }
+      else               { if (cl > bl) { bl = cl; bs = cs; } cl = 0; }
+   }
+   if (cl > bl) { bl = cl; bs = cs; }
+   pd->system->logToConsole("[VB] stk scan: %u bytes free, deepest=0x%08x",
+       bl, 0x20000000u + bs);
+}
+#endif
+
 /* ── ROM loading ─────────────────────────────────────────────────────────── */
 
 static bool load_rom(const char *path)
@@ -133,7 +164,15 @@ static int update(void *userdata)
    vb_audio_push();
 
    if (frame_count % 300 == 0)
+   {
+#ifdef TARGET_PLAYDATE
+      if (frame_count == 0) stack_scan_dtcm(); /* one-time DTCM margin scan */
+      pd->system->logToConsole("[VB] frame %d: emu=%ums disp=%ums stk=%u",
+          frame_count, t1-t0, t2-t1, (unsigned)stack_hwm());
+#else
       pd->system->logToConsole("[VB] frame %d: emu=%ums disp=%ums", frame_count, t1-t0, t2-t1);
+#endif
+   }
    frame_count++;
 
    pd->system->drawFPS(0, 0);
@@ -148,6 +187,14 @@ __declspec(dllexport)
 #endif
 int eventHandler(PlaydateAPI *playdate, PDSystemEvent event, uint32_t arg)
 {
+#ifdef TARGET_PLAYDATE
+   /* Capture entry SP once — the shallowest in-game depth ≈ stack alloc top. */
+   {
+      uint32_t _sp;
+      __asm volatile ("mov %0, sp" : "=r"(_sp));
+      if (!sc_entry_sp) sc_entry_sp = _sp;
+   }
+#endif
    (void)arg;
 
    switch (event)
@@ -171,6 +218,10 @@ int eventHandler(PlaydateAPI *playdate, PDSystemEvent event, uint32_t arg)
          if (!rom_loaded)
             pd->system->logToConsole("[VB] Failed to load any .vb ROM");
 
+#ifdef TARGET_PLAYDATE
+         pd->system->logToConsole("[VB] stack ref sp=%p size=%d",
+             (void*)sc_entry_sp, __STACK_SIZE);
+#endif
          pd->system->setUpdateCallback(update, NULL);
          break;
 

@@ -378,4 +378,19 @@ Side effect: `VIP_LOG` macro and `extern vb_log_fn` for `vip_draw.inc` were adde
 - **Run_Accurate stripped (VB_V810_FAST_ONLY)**: `Run_Accurate` (5,744 bytes) is dead code — `Init FAST` is always used. Removing it brings total interpreter text from 18,267 → 11,183 bytes, under the 16KB I-cache limit.
 - **VB_V810_FAST_ONLY result (Mario Clash)**: heavy frames improved from 87–127ms → 44–115ms. Best frames nearly halved. Worst-case outliers still ~115ms. Confirms I-cache was a real factor. Remaining variance is D-cache pressure on ROM instruction reads via SetFastMap.
 - **Wario Land cross-check**: switched test ROM to warioland.vb (2MB). worlds=12–16 during gameplay, yet heavy frames are 36–175ms — comparable to or worse than Mario Clash despite half the world count. Proves world count is not the bottleneck; V810 CPU game logic + larger ROM (more D-cache pressure) dominates. Frame 900 spike of 412ms is level loading. **The bottleneck is identical across games: SDRAM-backed V810 ROM instruction fetches.**
-- **Next planned step**: stack canary measurement to determine actual stack high-water mark, then WRAM in DTCM (move VB's 64KB working RAM from SDRAM to zero-wait-state DTCM to free D-cache capacity for ROM reads).
+- **Stack canary: three failed iterations before working design**.
+  1. First attempt filled stack with `0xDEAD` → FreeRTOS stack overflow method 2 checks its own `0xA5` pattern at context-switch time; our fill overwrote it, triggering a false-positive "stack overflow in task gameTask" crash.
+  2. Second attempt (no fill, scan upward from `sc_top - __STACK_SIZE`) → `sc_top` captured after ROM loading is already mid-stack (`0x20009b90`); subtracting 61,800 underflows below DTCM base → BusFault on frame 0.
+  3. Third attempt (scan downward from `sc_entry_sp`, one-time DTCM-wide scan for 0xA5 run) → **working**.
+
+- **Stack canary results (Wario Land, Wario level 2 demo)**:
+  - `stk scan: 7736 bytes free, deepest=0x20000060`
+  - DTCM layout: BSS at `0x20000000–0x2000005F` (96 bytes — all large buffers go to `.bss.DRAM` → SDRAM via SDK loader), then stack fills the rest to `0x2000FFFF`.
+  - Deepest frame ever reached: `0x20001DF8` — occurred during init (VB_Power → V810::Init), NOT during gameplay.
+  - Gameplay frames: `stk=45–1012` bytes below `sc_entry_sp` (`0x20009b90`). Very shallow during the update loop.
+  - RTOS overhead: ~32 KB between `sc_entry_sp` and deepest init frame; ~26 KB above `sc_entry_sp` for the RTOS task loop itself. Total RTOS + init usage: ~54 KB of the 61,800-byte stack.
+
+- **WRAM-in-DTCM ruled out**:
+  - DTCM = 64 KB. Stack needs ~54 KB for the RTOS task loop + init. Remaining margin: only 7,736 bytes.
+  - WRAM = 64 KB. Even after aggressive stack shrinking there is no room for a full 64 KB static array in DTCM. The plan is not feasible within the hardware constraints.
+  - The D-cache pressure problem (V810 ROM instruction reads vs. WRAM reads competing for 16 KB D-cache) **cannot be solved via DTCM placement of WRAM**.
