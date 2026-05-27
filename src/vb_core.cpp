@@ -41,6 +41,21 @@ extern "C" {
    void MDFN_FlushGameCheats(int nosave);
 }
 
+/* ── ITCM acceleration ─────────────────────────────────────────────────────── */
+
+#ifdef TARGET_PLAYDATE
+
+extern "C" {
+   extern char __itcm_v810_start[];
+   extern char __itcm_v810_end[];
+}
+
+#define VB_ITCM __attribute__((section(".itcm.v810"), optimize("Os")))
+
+#else
+#define VB_ITCM
+#endif
+
 /* ── Debug log ─────────────────────────────────────────────────────────────── */
 
 static void (*vb_log_fn)(const char *fmt, ...) = NULL;
@@ -79,7 +94,6 @@ uint16_t vb_input_buf     = 0;
 
 static uint8_t vb_low_battery = 0;
 static uint32_t vb_frame_count = 0;
-static uint32_t dbg_vip_calls = 0;
 
 bool vb_frame_rendered = false;
 
@@ -87,17 +101,8 @@ bool vb_frame_rendered = false;
 #define VB_RENDER_EVERY_N 8
 static int vb_render_skip_counter = 0;
 
-/* ── Memory access profiling ────────────────────────────────────────────────── */
 static uint32_t vip_reads_window = 0; /* VIP reads since last EventHandler call */
 static bool     vb_idle_mode    = false;
-
-static uint32_t dbg_rd_vip   = 0;  /* space 0: VIP registers/DRAM */
-static uint32_t dbg_rd_wram  = 0;  /* space 5: WRAM */
-static uint32_t dbg_rd_gprom = 0;  /* space 7: cart ROM */
-static uint32_t dbg_rd_other = 0;  /* VSU, HWCTRL, GPRAM */
-static uint32_t dbg_wr_vip   = 0;
-static uint32_t dbg_wr_wram  = 0;
-static uint32_t dbg_wr_other = 0;
 
 static struct MDFN_Surface surf;
 
@@ -174,61 +179,61 @@ static void HWCTRL_Write(v810_timestamp_t &timestamp, uint32 A, uint8 V)
 
 /* ── Memory bus callbacks ───────────────────────────────────────────────────── */
 
-uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
+VB_ITCM uint8 MDFN_FASTCALL MemRead8(v810_timestamp_t &timestamp, uint32 A)
 {
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: dbg_rd_vip++;   return VIP_Read8(timestamp, A);
-      case 2: dbg_rd_other++; return HWCTRL_Read(timestamp, A);
-      case 1: case 3: case 4: dbg_rd_other++; break;
-      case 5: dbg_rd_wram++;  return WRAM[A & 0xFFFF];
-      case 6: dbg_rd_other++; if (GPRAM) return GPRAM[A & GPRAM_Mask]; break;
-      case 7: dbg_rd_gprom++; return GPROM[A & GPROM_Mask];
+      case 0: return VIP_Read8(timestamp, A);
+      case 2: return HWCTRL_Read(timestamp, A);
+      case 1: case 3: case 4: break;
+      case 5: return WRAM[A & 0xFFFF];
+      case 6: if (GPRAM) return GPRAM[A & GPRAM_Mask]; break;
+      case 7: return GPROM[A & GPROM_Mask];
    }
    return 0;
 }
 
-uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
+VB_ITCM uint16 MDFN_FASTCALL MemRead16(v810_timestamp_t &timestamp, uint32 A)
 {
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: dbg_rd_vip++; vip_reads_window++; return VIP_Read16(timestamp, A);
-      case 2: dbg_rd_other++; return HWCTRL_Read(timestamp, A);
-      case 1: case 3: case 4: dbg_rd_other++; break;
-      case 5: dbg_rd_wram++;  return LoadU16_LE((uint16 *)&WRAM[A & 0xFFFF]);
-      case 6: dbg_rd_other++; if (GPRAM) return LoadU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask]); break;
-      case 7: dbg_rd_gprom++; return LoadU16_LE((uint16 *)&GPROM[A & GPROM_Mask]);
+      case 0: vip_reads_window++; return VIP_Read16(timestamp, A);
+      case 2: return HWCTRL_Read(timestamp, A);
+      case 1: case 3: case 4: break;
+      case 5: return LoadU16_LE((uint16 *)&WRAM[A & 0xFFFF]);
+      case 6: if (GPRAM) return LoadU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask]); break;
+      case 7: return LoadU16_LE((uint16 *)&GPROM[A & GPROM_Mask]);
    }
    return 0;
 }
 
-void MDFN_FASTCALL MemWrite8(v810_timestamp_t &timestamp, uint32 A, uint8 V)
+VB_ITCM void MDFN_FASTCALL MemWrite8(v810_timestamp_t &timestamp, uint32 A, uint8 V)
 {
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: dbg_wr_vip++;   VIP_Write8(timestamp, A, V);  break;
-      case 1: dbg_wr_other++; VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
-      case 2: dbg_wr_other++; HWCTRL_Write(timestamp, A, V); break;
-      case 5: dbg_wr_wram++;  WRAM[A & 0xFFFF] = V; break;
-      case 6: dbg_wr_other++; if (GPRAM) GPRAM[A & GPRAM_Mask] = V; break;
-      case 3: case 4: case 7: dbg_wr_other++; break;
+      case 0: VIP_Write8(timestamp, A, V);  break;
+      case 1: VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
+      case 2: HWCTRL_Write(timestamp, A, V); break;
+      case 5: WRAM[A & 0xFFFF] = V; break;
+      case 6: if (GPRAM) GPRAM[A & GPRAM_Mask] = V; break;
+      case 3: case 4: case 7: break;
    }
 }
 
-void MDFN_FASTCALL MemWrite16(v810_timestamp_t &timestamp, uint32 A, uint16 V)
+VB_ITCM void MDFN_FASTCALL MemWrite16(v810_timestamp_t &timestamp, uint32 A, uint16 V)
 {
    A &= (1 << 27) - 1;
    switch (A >> 24)
    {
-      case 0: dbg_wr_vip++;   VIP_Write16(timestamp, A, V); break;
-      case 1: dbg_wr_other++; VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
-      case 2: dbg_wr_other++; HWCTRL_Write(timestamp, A, V); break;
-      case 5: dbg_wr_wram++;  StoreU16_LE((uint16 *)&WRAM[A & 0xFFFF], V); break;
-      case 6: dbg_wr_other++; if (GPRAM) StoreU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask], V); break;
-      case 3: case 4: case 7: dbg_wr_other++; break;
+      case 0: VIP_Write16(timestamp, A, V); break;
+      case 1: VSU_Write((timestamp + VSU_CycleFix) >> 2, A, V); break;
+      case 2: HWCTRL_Write(timestamp, A, V); break;
+      case 5: StoreU16_LE((uint16 *)&WRAM[A & 0xFFFF], V); break;
+      case 6: if (GPRAM) StoreU16_LE((uint16 *)&GPRAM[A & GPRAM_Mask], V); break;
+      case 3: case 4: case 7: break;
    }
 }
 
@@ -279,12 +284,10 @@ extern "C" void VB_SetEvent(const int type, const v810_timestamp_t next_timestam
 /* One VB frame = 20 MHz / 50 Hz = 400 000 cycles. Allow 2× as a safety budget. */
 #define VB_FRAME_BUDGET 800000
 
-static int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
+static VB_ITCM int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
 {
-   if (timestamp >= next_vip_ts) {
+   if (timestamp >= next_vip_ts)
       next_vip_ts = VIP_Update(timestamp);
-      dbg_vip_calls++;
-   }
    if (timestamp >= next_timer_ts) next_timer_ts = TIMER_Update(timestamp);
    if (timestamp >= next_input_ts) next_input_ts = VBINPUT_Update(timestamp);
 
@@ -305,6 +308,18 @@ static int32 MDFN_FASTCALL EventHandler(const v810_timestamp_t timestamp)
 
    return CalcNextTS();
 }
+
+/* ── ITCM function pointer types (stack-copy approach) ──────────────────────── */
+
+#ifdef TARGET_PLAYDATE
+
+typedef uint8  (*MemRead8Fn )(v810_timestamp_t &, uint32);
+typedef uint16 (*MemRead16Fn)(v810_timestamp_t &, uint32);
+typedef void   (*MemWrite8Fn )(v810_timestamp_t &, uint32, uint8);
+typedef void   (*MemWrite16Fn)(v810_timestamp_t &, uint32, uint16);
+typedef int32  (*EventHandlerFn)(const v810_timestamp_t);
+
+#endif /* TARGET_PLAYDATE */
 
 static void ForceEventUpdates(const v810_timestamp_t timestamp)
 {
@@ -502,18 +517,35 @@ void vb_run_frame(void)
    vb_idle_mode = false;
    VB_V810->SetIdleHalt(false);
 
-   dbg_vip_calls = 0;
-   dbg_rd_vip = dbg_rd_wram = dbg_rd_gprom = dbg_rd_other = 0;
-   dbg_wr_vip = dbg_wr_wram = dbg_wr_other = 0;
    VIP_StartFrame(&spec);
 
+#ifdef TARGET_PLAYDATE
+   {
+      /* Copy hot callbacks into this stack frame (which lives in DTCM).
+         Callee frames grow below stk_buf and can never overwrite it. */
+      const size_t sz = (size_t)(__itcm_v810_end - __itcm_v810_start);
+      uint8_t stk_buf[1024] __attribute__((aligned(32)));
+      memcpy(stk_buf, __itcm_v810_start, sz);
+      __asm volatile ("dsb" ::: "memory");
+      __asm volatile ("isb" ::: "memory");
+      const uintptr_t sdram_base = (uintptr_t)(void*)__itcm_v810_start;
+      const uintptr_t stk_base   = (uintptr_t)(void*)stk_buf;
+#define TO_STK(fn) ((void*)(stk_base + ((uintptr_t)(void*)(fn) - sdram_base)))
+      MemRead8Fn     f_r8  = (MemRead8Fn)    TO_STK(MemRead8);
+      MemRead16Fn    f_r16 = (MemRead16Fn)   TO_STK(MemRead16);
+      MemWrite8Fn    f_w8  = (MemWrite8Fn)   TO_STK(MemWrite8);
+      MemWrite16Fn   f_w16 = (MemWrite16Fn)  TO_STK(MemWrite16);
+      EventHandlerFn f_eh  = (EventHandlerFn)TO_STK(EventHandler);
+#undef TO_STK
+      VB_V810->SetMemReadHandlers (f_r8,  f_r16, NULL);
+      VB_V810->SetMemWriteHandlers(f_w8,  f_w16, NULL);
+      VB_V810->SetIOReadHandlers  (f_r8,  f_r16, NULL);
+      VB_V810->SetIOWriteHandlers (f_w8,  f_w16, NULL);
+      v810_timestamp = VB_V810->Run(f_eh);
+   }
+#else
    v810_timestamp = VB_V810->Run(EventHandler);
-
-   if (vb_frame_count % 300 == 0)
-      VB_LOG("[VB] frame %u skip=%d rd:vip=%u wram=%u rom=%u oth=%u wr:vip=%u wram=%u oth=%u",
-             (unsigned)vb_frame_count, (int)!do_render,
-             dbg_rd_vip, dbg_rd_wram, dbg_rd_gprom, dbg_rd_other,
-             dbg_wr_vip, dbg_wr_wram, dbg_wr_other);
+#endif
 
    FixNonEvents();
    ForceEventUpdates(v810_timestamp);

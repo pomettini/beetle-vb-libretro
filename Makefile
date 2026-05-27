@@ -69,7 +69,7 @@ CXXFLAGS += -std=c++14 -fno-exceptions -fno-rtti
 CXXFLAGS += $(DEFINES) $(INCDIR)
 
 # ── Linker flags ─────────────────────────────────────────────────────────────
-LDSCRIPT = $(SDK)/C_API/buildsupport/link_map.ld
+LDSCRIPT = link_map.ld
 LDFLAGS  = -nostartfiles $(MCFLAGS)
 LDFLAGS += -T$(LDSCRIPT)
 LDFLAGS += -Wl,-Map=$(OBJDIR)/pdex.map,--cref,--gc-sections,--no-warn-mismatch,--emit-relocs
@@ -154,10 +154,16 @@ $(OBJDIR)/sim/%.o: %.cpp | $(OBJDIR)
 
 # ── Compile rules ─────────────────────────────────────────────────────────────
 
-# v810 interpreter: compile with -Os so it fits in the 32KB Cortex-M7 I-cache
+# vb_core: -mlong-calls so that ITCM functions (copied to a new address) use
+# LDR+BX via literal pool for all outgoing calls instead of PC-relative b.w/bl.
+$(OBJDIR)/src/vb_core.o: src/vb_core.cpp | $(OBJDIR)
+	@mkdir -p $(dir $@)
+	$(CXX) -c $(CXXFLAGS) -mlong-calls $< -o $@
+
+# v810 interpreter: -Os to minimize I-cache footprint (16KB Rev B); align loops to cache lines
 $(OBJDIR)/mednafen/hw_cpu/v810/v810_cpu.o: mednafen/hw_cpu/v810/v810_cpu.cpp | $(OBJDIR)
 	@mkdir -p $(dir $@)
-	$(CXX) -c $(filter-out -O2,$(CXXFLAGS)) -Os $< -o $@
+	$(CXX) -c $(filter-out -O2 -falign-functions=16,$(CXXFLAGS)) -Os -falign-functions=32 -falign-loops=32 $< -o $@
 
 $(OBJDIR)/%.o: %.c | $(OBJDIR)
 	@mkdir -p $(dir $@)
