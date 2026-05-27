@@ -3,6 +3,11 @@
 #define BGM_AFFINE	0x2
 #define BGM_OBJ		0x3
 
+#ifdef TARGET_PLAYDATE
+extern void (*vb_log_fn)(const char *fmt, ...);
+#define VIP_LOG(...) do { if(vb_log_fn) vb_log_fn(__VA_ARGS__); } while(0)
+#endif
+
 
 static void DrawBG(uint8 *target, uint16 RealY, bool lr, uint8 bgmap_base_raw, bool overplane, uint16 overplane_char, uint32 SourceX, uint32 SourceY, uint32 scx, uint32 scy, uint16 DestX, uint16 DestY, uint16 DestWidth, uint16 DestHeight)
 {
@@ -351,7 +356,13 @@ static void DrawOBJ(uint8 *fb[2], uint16 Y, bool lron[2])
 
 void VIP_DrawBlock(uint8 block_no, uint8 *fb_l, uint8 *fb_r)
 {
+#if defined(VB_NO_RENDER) && VB_NO_RENDER
+ return;
+#endif
  int y, world, lr;
+#ifdef TARGET_PLAYDATE
+ static uint8 vip_world_count_log = 0; /* log world count once per render */
+#endif
  for( y = 0; y < 8; y++)
  {
   memset(fb_l + y * 512, BKCOL, 384);
@@ -393,7 +404,11 @@ void VIP_DrawBlock(uint8 block_no, uint8 *fb_l, uint8 *fb_r)
   if(end)
    break;
 
+#if defined(VB_SCANLINES) && VB_SCANLINES >= 1
+  for(y = 0; y < 8; y += 2)
+#else
   for(y = 0; y < 8; y++)
+#endif
   {
    uint8 *fb[2] = { &fb_l[y * 512], &fb_r[y * 512] };
 
@@ -438,7 +453,18 @@ void VIP_DrawBlock(uint8 block_no, uint8 *fb_l, uint8 *fb_r)
    if(obj_search_which)
     obj_search_which--;
 
+  if(end) break;
  }
 
-
+#ifdef TARGET_PLAYDATE
+ /* Log world count on the first block of each render, once per second */
+ if(block_no == 0)
+ {
+  vip_world_count_log++;
+  if(vip_world_count_log == 1)
+   VIP_LOG("[VIP] worlds=%d", 31 - world);
+  if(vip_world_count_log >= 50)
+   vip_world_count_log = 0;
+ }
+#endif
 }

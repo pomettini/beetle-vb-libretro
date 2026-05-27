@@ -58,7 +58,7 @@ extern "C" {
 
 /* ── Debug log ─────────────────────────────────────────────────────────────── */
 
-static void (*vb_log_fn)(const char *fmt, ...) = NULL;
+void (*vb_log_fn)(const char *fmt, ...) = NULL;
 
 void vb_set_log(void (*fn)(const char *fmt, ...))
 {

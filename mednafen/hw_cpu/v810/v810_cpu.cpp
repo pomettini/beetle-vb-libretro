@@ -496,6 +496,7 @@ INLINE uint32 V810::GetSREG(unsigned int which)
 #define RB_RDOP(PC_offset, ...) RDOP(timestamp, PC + PC_offset, ## __VA_ARGS__)
 #endif
 
+#ifndef VB_V810_FAST_ONLY
 void V810::Run_Accurate(int32 MDFN_FASTCALL (*event_handler)(const v810_timestamp_t timestamp))
 {
  const bool RB_AccurateMode = true;
@@ -508,6 +509,7 @@ void V810::Run_Accurate(int32 MDFN_FASTCALL (*event_handler)(const v810_timestam
  #undef RB_CPUHOOK
  #undef RB_ADDBT
 }
+#endif /* VB_V810_FAST_ONLY */
 
 /*
  * Undefine accurate mode defines
@@ -554,8 +556,10 @@ v810_timestamp_t V810::Run(int32 MDFN_FASTCALL (*event_handler)(const v810_times
    {
       if(EmuMode == V810_EMU_MODE_FAST)
          Run_Fast(event_handler);
+#ifndef VB_V810_FAST_ONLY
       else
          Run_Accurate(event_handler);
+#endif
    }
    return v810_timestamp;
 }

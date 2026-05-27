@@ -1312,29 +1312,69 @@ v810_timestamp_t MDFN_FASTCALL VIP_Update(const v810_timestamp_t timestamp)
             if(skip && InstantDisplayHack && AllowDrawSkip) { }
             else
             {
-               int lr;
                VIP_DrawBlock(DrawingBlock, DrawingBuffers[0] + 8, DrawingBuffers[1] + 8);
 
-               for(lr = 0; lr < 2; lr++)
+#ifdef TARGET_PLAYDATE
+               /* Write directly from DrawingBuffers to surface row-by-row (sequential,
+                  cache-friendly). Skips the pack-to-FB and CopyFBColumnToTarget passes. */
                {
-                  int x;
-                  if(lr && !Anaglyph_Colors[1]) continue;
-                  uint8 *FB_Target = FB[DrawingFB][lr] + DrawingBlock * 2;
-
-                  for(x = 0; x < 384; x++)
+                  int y, x;
+#if defined(VB_SCANLINES) && VB_SCANLINES == 2
+                  /* Stretch: duplicate each rendered line to fill the skipped row */
+                  for(y = 0; y < 8; y += 2)
                   {
-                     FB_Target[64 * x + 0] = (DrawingBuffers[lr][8 + x + 512 * 0] << 0)
-                        | (DrawingBuffers[lr][8 + x + 512 * 1] << 2)
-                        | (DrawingBuffers[lr][8 + x + 512 * 2] << 4)
-                        | (DrawingBuffers[lr][8 + x + 512 * 3] << 6);
+                     const uint8 *src  = DrawingBuffers[0] + 8 + 512 * y;
+                     uint8 *dst0 = surface->pixels8 + (DrawingBlock * 8 + y)     * surface->pitchinpix;
+                     uint8 *dst1 = surface->pixels8 + (DrawingBlock * 8 + y + 1) * surface->pitchinpix;
+                     for(x = 0; x < 384; x++)
+                        dst0[x] = dst1[x] = (uint8)BrightCLUT[0][src[x]];
+                  }
+#elif defined(VB_SCANLINES) && VB_SCANLINES == 1
+                  /* Scanlines: render even rows, black gap on odd rows (retro CRT look) */
+                  for(y = 0; y < 8; y += 2)
+                  {
+                     const uint8 *src  = DrawingBuffers[0] + 8 + 512 * y;
+                     uint8 *dst0 = surface->pixels8 + (DrawingBlock * 8 + y)     * surface->pitchinpix;
+                     uint8 *dst1 = surface->pixels8 + (DrawingBlock * 8 + y + 1) * surface->pitchinpix;
+                     for(x = 0; x < 384; x++)
+                        dst0[x] = (uint8)BrightCLUT[0][src[x]];
+                     memset(dst1, (int)(uint8)BrightCLUT[0][0], 384);
+                  }
+#else
+                  /* Full quality: all 8 scanlines */
+                  for(y = 0; y < 8; y++)
+                  {
+                     const uint8 *src = DrawingBuffers[0] + 8 + 512 * y;
+                     uint8 *dst = surface->pixels8 + (DrawingBlock * 8 + y) * surface->pitchinpix;
+                     for(x = 0; x < 384; x++)
+                        dst[x] = (uint8)BrightCLUT[0][src[x]];
+                  }
+#endif
+               }
+#else
+               {
+                  int lr;
+                  for(lr = 0; lr < 2; lr++)
+                  {
+                     int x;
+                     if(lr && !Anaglyph_Colors[1]) continue;
+                     uint8 *FB_Target = FB[DrawingFB][lr] + DrawingBlock * 2;
 
-                     FB_Target[64 * x + 1] = (DrawingBuffers[lr][8 + x + 512 * 4] << 0)
-                        | (DrawingBuffers[lr][8 + x + 512 * 5] << 2)
-                        | (DrawingBuffers[lr][8 + x + 512 * 6] << 4)
-                        | (DrawingBuffers[lr][8 + x + 512 * 7] << 6);
+                     for(x = 0; x < 384; x++)
+                     {
+                        FB_Target[64 * x + 0] = (DrawingBuffers[lr][8 + x + 512 * 0] << 0)
+                           | (DrawingBuffers[lr][8 + x + 512 * 1] << 2)
+                           | (DrawingBuffers[lr][8 + x + 512 * 2] << 4)
+                           | (DrawingBuffers[lr][8 + x + 512 * 3] << 6);
 
+                        FB_Target[64 * x + 1] = (DrawingBuffers[lr][8 + x + 512 * 4] << 0)
+                           | (DrawingBuffers[lr][8 + x + 512 * 5] << 2)
+                           | (DrawingBuffers[lr][8 + x + 512 * 6] << 4)
+                           | (DrawingBuffers[lr][8 + x + 512 * 7] << 6);
+                     }
                   }
                }
+#endif
             }
 
             SBOUT_InactiveTime = running_timestamp + 1120;
@@ -1423,6 +1463,7 @@ v810_timestamp_t MDFN_FASTCALL VIP_Update(const v810_timestamp_t timestamp)
 
                if(!skip && InstantDisplayHack)
                {
+#ifndef TARGET_PLAYDATE
                   int lr;
                   /* Ugly kludge, fix in the future. */
                   int32 save_DisplayRegion = DisplayRegion;
@@ -1452,6 +1493,7 @@ v810_timestamp_t MDFN_FASTCALL VIP_Update(const v810_timestamp_t timestamp)
                   Column = save_Column;
                   Repeat = save_Repeat;
                   RecalcBrightnessCache();
+#endif /* !TARGET_PLAYDATE */
                }
 
                VB_ExitLoop();

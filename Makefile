@@ -43,6 +43,10 @@ DEFINES += -DNDEBUG
 DEFINES += -DVB_DISABLE_AUDIO=1
 DEFINES += -DMEDNAFEN_VERSION=\"0.9.31\" -DMEDNAFEN_VERSION_NUMERIC=931
 DEFINES += -D__HEAP_SIZE=$(HEAP_SIZE) -D__STACK_SIZE=$(STACK_SIZE)
+# VB_SCANLINES: 0=off (full quality), 1=black-gap scanlines (retro CRT look), 2=duplicate lines (same density)
+DEFINES += -DVB_SCANLINES=0
+# Strip Run_Accurate (5744 dead bytes) since we always init in FAST mode
+DEFINES += -DVB_V810_FAST_ONLY=1
 
 # ── Include paths ────────────────────────────────────────────────────────────
 INCDIR  = -I .
