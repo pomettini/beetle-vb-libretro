@@ -427,16 +427,12 @@ static void emit_setf(uint32_t cond, int rd)
              e32(0xF091,0x0101); break;
     case 12: /* NS */ e32(0xEA4F,(uint16_t)((1<<8)|(1<<6)|(1<<4)|0));
              e32(0xF091,0x0101); break;
-    case 3:  /* NH */ e32(0xF000,0x0109); /* AND r1,r0,#9 (Z||CY) */
-             e16(0x0849); /* LSR.N r1,r1,#1? no — just test if nonzero */
-             /* Redo: just produce 0 or 1 via OR then LSR... simpler: */
-             jit_code_pos -= 1; /* undo the bad emit */
-             /* r1 = ((r0>>3)|(r0>>0)) & 1 */
-             e32(0xEA4F,(uint16_t)((1<<8)|(3<<6)|(1<<4)|0)); /* LSR r1,r0,#3 */
-             e32(0xEA41,(uint16_t)(0x0100)); /* ORR r1,r1,r0 */
-             e32(0xF001,0x0101); /* AND r1,r1,#1 */
+    case 3:  /* NH = Z||CY: r1 = (CY bit | Z bit) & 1 */
+             e32(0xEA4F,(uint16_t)((1<<8)|(3<<6)|(1<<4)|0)); /* LSR r1,r0,#3 (CY→bit0) */
+             e32(0xEA41,(uint16_t)(0x0100));                  /* ORR r1,r1,r0 (|Z) */
+             e32(0xF001,0x0101);                              /* AND r1,r1,#1 */
              break;
-    case 11: /* H */  e32(0xF000,0x0109);
+    case 11: /* H = !(Z||CY) */
              e32(0xEA4F,(uint16_t)((1<<8)|(3<<6)|(1<<4)|0));
              e32(0xEA41,(uint16_t)(0x0100));
              e32(0xF001,0x0101);
@@ -970,57 +966,26 @@ static int jit_translate(JitBlock *blk, uint32_t start_pc)
             arg3 = (hw1 >> 5) & 0x1F;
             arg2 = hw1 & 0x1F;
             imm  = sx16(hw2);
+            /* Read low halfword */
             emit_ldr_preg(1, (int)arg2);
             emit_mov32(2, (uint32_t)imm);
-            e32(0xEB01, 0x0102);        /* r1 = EA */
-            /* align: r1 &= ~3 */
-            e32(0xF021, 0x0103);        /* BIC.W r1, r1, #3 */
-            /* read low halfword */
+            e32(0xEB01, 0x0102);        /* r1 = base + disp (EA) */
+            e32(0xF021, 0x0103);        /* r1 &= ~3 (align to word) */
             emit_mov_reg(0, 6);
             emit_bl((const void *)jit_mem_r16s);
-            /* save low to r3 (zero-extended already — r16s sign-extends but
-               we only need 16 bits; mask it) */
-            e32(0xF400, 0x307F); /* AND.W r3, r0, #0xFF (wrong — need 0xFFFF) */
-            /* Fix: use UXTH r3, r0 */
-            jit_code_pos -= 2;
-            e32(0xFA1F, 0xA380); /* UXTH r3, r0: hw1=0xFA1F, hw2=0xA380? */
-            /* Actually UXTH T2: 1111 1010 0001 1111 | 1111 Rd 1000 Rm
-               hw2 = 0xF080|(Rd<<8)|Rm = 0xF380 for Rd=r3, Rm=r0? No:
-               hw2 = 0x8000|(Rd<<8)|Rm?  Let me use AND r3,r0,#0xFFFF instead */
-            jit_code_pos -= 2;
-            /* Just use MOVW r3,#0; ORR r3,r3,r0 is ugly. Simpler: store r0 low 16 bits */
-            /* Actually r16s returns sign-extended 32-bit in r0.
-               For LD_W: result = low16(r0) | (high16(second_read) << 16)
-               But sign-extension ruins the low16... use zero-extended read instead.
-               We don't have jit_mem_r16u. Let's treat r16s as returning sign-extended
-               and just use the low 16 bits for the low word. */
-            /* UXTH r3, r0  — T1 16-bit: 0000 1011 00 Rm Rd = 0xB200|(Rm<<3)|Rd? No */
-            /* UXTH T2 (32-bit): 1111 1010 0001 1111 | 1111 Rd 1000 Rm
-               hw1 = 0xFA1F (Rm=0xF = don't use), hw2 = (Rd<<8)|0x80|Rm
-               For Rd=r3, Rm=r0: hw2 = (3<<8)|0x80|0 = 0x0380 */
-            e32(0xFA1F, 0xF383); /* hmm, let me recalculate */
-            /* UXTH T2: 1111 1010 0001 1111 | 1111 Rd 1000 Rm
-               Rd=3, Rm=0:
-               hw2 = (0xF<<12)|(3<<8)|0x80|0 = 0xF380 */
-            jit_code_pos -= 2;
-            e32(0xFA1F, 0xF380); /* UXTH r3, r0 */
-            /* read high halfword at EA+2 */
+            /* UXTH T2: hw1=0xFA1F, hw2=(0xF<<12)|(Rd<<8)|0x80|Rm */
+            e32(0xFA1F, 0xF380);        /* UXTH r3, r0 — save zero-extended low 16 bits */
+            /* Read high halfword at EA+2 */
             emit_ldr_preg(1, (int)arg2);
             emit_mov32(2, (uint32_t)imm);
             e32(0xEB01, 0x0102);
-            e32(0xF021, 0x0103); /* BIC r1, r1, #3 → align */
-            emit_mov32(2, 2);
-            e32(0xEB01, 0x0102); /* ADD r1, r1, #2 → EA+2 */
+            e32(0xF021, 0x0103);        /* r1 &= ~3 */
+            e32(0xF101, 0x0102);        /* ADD.W r1, r1, #2 → EA+2 */
             emit_mov_reg(0, 6);
             emit_bl((const void *)jit_mem_r16s);
-            /* r0 = sign-ext upper half; shift left 16, then ORR with r3 */
-            e32(0xEA4F, (uint16_t)((0<<8)|(4<<6)|(0<<4)|0)); /* LSL.W r0, r0, #16? */
-            /* LSL.W r0, r0, #16: imm=16, imm3=4, imm2=0, type=0(LSL)
-               hw2 = (4<<12)|(0<<8)|(0<<6)|(0<<4)|0 = 0x4000 */
-            jit_code_pos -= 2;
-            e32(0xEA4F, 0x4000);
-            /* ORR r0, r0, r3 */
-            e32(0xEA40, 0x0003);
+            /* LSL.W r0, r0, #16: imm3=4,imm2=0,type=0,Rd=0,Rm=0 → hw2=0x4000 */
+            e32(0xEA4F, 0x4000);        /* LSL.W r0, r0, #16 */
+            e32(0xEA40, 0x0003);        /* ORR r0, r0, r3 */
             emit_str_preg(0, (int)arg3);
             emit_addclock(4);
             cur_pc += 4; n++;
@@ -1077,11 +1042,8 @@ static int jit_translate(JitBlock *blk, uint32_t start_pc)
             emit_ldr_preg(1, (int)arg3);
             emit_mov32(2, (uint32_t)imm);
             e32(0xEB01, 0x0102);
-            e32(0xF021, 0x0103);
-            e32(0xEB01, 0x0102); /* add r1, r1, r2 where r2=2? no: need EA|2 */
-            /* ADD.W r1, r1, #2 */
-            jit_code_pos -= 2;
-            e32(0xF101, 0x0102); /* ADD.W r1, r1, #2 */
+            e32(0xF021, 0x0103);        /* r1 &= ~3 */
+            e32(0xF101, 0x0102);        /* ADD.W r1, r1, #2 → EA+2 */
             emit_ldr_preg(2, (int)arg1);
             /* LSR.W r2, r2, #16: imm3=4,imm2=0,type=01,Rd=2,Rm=2 → hw2=0x4212 */
             e32(0xEA4F, 0x4212); /* LSR.W r2, r2, #16 */
@@ -1134,10 +1096,6 @@ static int jit_translate(JitBlock *blk, uint32_t start_pc)
         }
     }
 
-    /* Handle branch opcodes that fall into the default case via op6 range.
-       This block handles the case where op6 is in 0x20..0x27 but was not
-       explicitly listed above.  The switch default covers this. */
-
     if (!ended) {
         /* Reached instruction limit or code buffer boundary */
         emit_exit(cur_pc);
@@ -1179,14 +1137,29 @@ JitBlock *jit_lookup(uint32_t vb_pc)
     if (blk->vb_pc == vb_pc && blk->code_thumb != 0)
         return blk; /* cache hit */
 
-    /* Miss or collision: (re)translate */
-    if ((jit_code_pos + JIT_MAX_BLOCK_HW) >= JIT_CODE_WORDS) {
-        /* Code buffer full — flush all and start from beginning */
-        jit_flush();
-        blk = &jit_table[slot];
+    /* Miss: wrap the write pointer rather than flushing everything. */
+    if (jit_code_pos + JIT_MAX_BLOCK_HW > JIT_CODE_WORDS)
+        jit_code_pos = 0;
+
+    /* Targeted eviction: invalidate any block whose code overlaps the region
+       we are about to write.  O(HTAB_SIZE) scan — only runs on a miss, which
+       is rare once the working set is warm. */
+    {
+        uint32_t cs = jit_code_pos;
+        uint32_t ce = cs + JIT_MAX_BLOCK_HW;
+        for (uint32_t i = 0; i < JIT_HTAB_SIZE; i++) {
+            if (!jit_table[i].code_thumb) continue;
+            uint32_t pos = (uint32_t)(
+                ((jit_table[i].code_thumb & ~(uintptr_t)1u) - (uintptr_t)jit_code_buf)
+                / sizeof(uint16_t));
+            if (pos < ce && pos + jit_table[i].hw_count > cs) {
+                jit_table[i].vb_pc      = 0;
+                jit_table[i].code_thumb = 0;
+            }
+        }
     }
 
-    blk->vb_pc      = 0;  /* mark invalid while translating */
+    blk->vb_pc      = 0;
     blk->code_thumb = 0;
     blk->hw_count   = 0;
 
